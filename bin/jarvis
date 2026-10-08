@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Jarvis CLI. The daemon runs in the plugin's own venv (faster-whisper +
+# Kokoro); every other command is a tiny standard-library client of its socket.
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+VENV_PY="${XDG_DATA_HOME:-$HOME/.local/share}/grivera-jarvis/venv/bin/python"
+PY=python3
+[[ $1 == daemon && -x $VENV_PY ]] && PY="$VENV_PY"
+exec env PYTHONDONTWRITEBYTECODE=1 "$PY" "$ROOT/lib/jarvis.py" "$@"
