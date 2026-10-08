@@ -5,8 +5,9 @@ Jarvis does it: open and arrange apps, switch workspaces, play music, change
 settings, answer questions, and even design you a new theme.
 
 Speech recognition and Jarvis's voice run locally on your laptop. Simple
-commands happen instantly; anything else is planned by Claude, which can only
-choose from a fixed set of safe actions that Jarvis checks before running.
+commands happen instantly; anything else is planned by Claude or Codex (your
+pick), which can only choose from a fixed set of safe actions that Jarvis
+checks before running.
 
 ![Jarvis: the panel, the on-screen bubble and the bar icon](preview.png)
 
@@ -25,15 +26,20 @@ the arc reactor icon to your bar. Then:
    `~/.config/omarchy/plugins/grivera.jarvis/bin/jarvis setup`. It creates a
    Python environment with faster-whisper and Kokoro and downloads the models
    (about 1.5 GB, in `~/.local/share/grivera-jarvis/`). A few minutes, once.
+   The Python packages are the exact tested versions in `lib/requirements.txt`,
+   and every model file is checked against a SHA-256 before it's used.
 2. **Pick a shortcut.** The Copilot key works right away: Jarvis binds it in
    Hyprland itself (no config files touched) and takes it over from Omarchy's
    menu. No Copilot key? Choose Super+Alt+J, Super+Alt+A or any combination
    under **Shortcut** in the panel. Jarvis tells you if a combination is
    already used and by what, and re-applies the binding whenever Hyprland
    reloads. You can also right-click the bar icon to talk, or type a request.
-3. **Make sure Claude Code is installed and signed in** (`claude` on your PATH).
-   Jarvis uses it in print mode with the fast Haiku model to plan requests the
-   built-in commands don't cover. Your subscription or API key works as is.
+3. **Make sure Claude Code or Codex is installed and signed in** (`claude` or
+   `codex` on your PATH). Jarvis uses it, with no tools, to plan requests the
+   built-in commands don't cover: Claude Code with the fast Haiku model (about
+   3 s), or Codex with GPT-6-Luna (about 5 s). Pick one under **Cloud model**
+   in the panel; if only one is installed, that one is used. Your subscription or
+   API key works as is.
 
 To update or remove it: `omarchy plugin update grivera.jarvis`,
 `omarchy plugin remove grivera.jarvis`.
@@ -59,6 +65,10 @@ To update or remove it: `omarchy plugin update grivera.jarvis`,
   night light, do not disturb, power profiles, fonts, themes and backgrounds,
   menus and switchers, keyboard backlight, brightness, audio outputs,
   reminders, webapps, network status and speed tests, and more.
+- Bar widgets on and off: "disable the Airwaves plugin", "hide the weather
+  widget", "show the SpaceX plugin". Only bar widgets: the lock screen, idle,
+  notifications and other background services, the bar, the menu and Jarvis
+  itself are never switched off by voice.
 - Questions get spoken answers from real data: "how much battery do I have?",
   "what's the weather?", "what version of Omarchy am I running?",
   "how fast is my internet?" Plus the time, the date and quick math.
@@ -76,7 +86,8 @@ To update or remove it: `omarchy plugin update grivera.jarvis`,
 **Make things**
 - "Make me a new background of a misty pine forest at dawn": Codex paints a
   wallpaper, saves it with your theme's backgrounds and sets it.
-- "Make me a theme inspired by a rainy night in Tokyo": Claude designs a full
+- "Make me a theme inspired by a rainy night in Tokyo": Claude (or Codex,
+  if it's your planner) designs a full
   Omarchy theme (palette, icons, bar and menu colors) and Codex paints a
   matching wallpaper. It's saved to `~/.config/omarchy/themes/` and applied,
   about a minute later.
@@ -137,7 +148,8 @@ Copilot key ─► jarvis press ─► daemon: microphone (PipeWire) + Silero VA
                        faster-whisper, on your laptop (~0.7 s)
                                    │
    your phrases ─► built-in matcher ─► learned requests ─► Claude (claude -p, Haiku)
-     (instant)       (instant)           (instant)          plans with tools only, ~2 s
+     (instant)       (instant)           (instant)          or Codex (codex exec, Luna)
+                                                            plans with tools only, 3-5 s
                                    │
        actions, each checked: real window addresses, installed apps,
        http(s) URLs, Omarchy commands by safety tier
@@ -145,21 +157,23 @@ Copilot key ─► jarvis press ─► daemon: microphone (PipeWire) + Silero VA
       a chime, or a spoken reply in Kokoro's "George" voice (local), + the bubble
 ```
 
-Requests take about 1 second when handled locally and 2 to 4 seconds when
-Claude plans them.
+Requests take about 1 second when handled locally, 2 to 4 seconds when
+Claude plans them and 4 to 6 seconds with Codex.
 
 ## Safety
 
-Claude never runs anything itself. It returns a plan made of named actions,
+Neither Claude nor Codex runs anything itself (Codex runs with its shell and
+other agent tools turned off). It returns a plan made of named actions,
 and Jarvis checks each one before running it, without a shell:
 
 - **Allowed**: window and app control, media, toggles, capture, menus,
   brightness, audio, theme and fonts, status questions.
-- **Asks first** (you say "yes"): restarts, default apps, DNS, display scaling,
-  turning off the laptop screen, closing three or more windows, webapps.
-- **Blocked, and not even shown to Claude**: anything needing sudo, installing
-  or removing software, updates, refresh/reinstall, shutdown, reboot and
-  logout, and arbitrary shell commands.
+- **Asks first** (you say "yes"): shutting down ("shut down the computer"),
+  restarts, default apps, DNS, display scaling, turning off the laptop screen,
+  closing three or more windows, webapps.
+- **Blocked, and not even shown to the model**: anything needing sudo, installing
+  or removing software, updates, refresh/reinstall, reboot and logout, and
+  arbitrary shell commands.
 
 Only your own phrases run shell commands, and they're yours to write.
 
@@ -167,7 +181,7 @@ Only your own phrases run shell commands, and they're yours to write.
 
 - Your voice is recognized on your laptop and never uploaded. Jarvis's voice
   is generated locally too.
-- When a request goes to Claude, the text of what you said, your open window
+- When a request goes to Claude or Codex, the text of what you said, your open window
   titles and installed app names are sent along so it can plan.
 - **Instant start** (off by default; turn it on in the panel) keeps the
   microphone open with only the last second held in memory, so a word said
@@ -181,7 +195,8 @@ Only your own phrases run shell commands, and they're yours to write.
 ## Requirements
 
 - Omarchy 4 (Hyprland 0.56 with the Lua config), PipeWire, Python 3.
-- [Claude Code](https://claude.com/claude-code) for planning, signed in.
+- [Claude Code](https://claude.com/claude-code) or the
+  [Codex CLI](https://github.com/openai/codex) for planning, signed in.
 - Optional:
   - The [Codex CLI](https://github.com/openai/codex) with image generation, for
     backgrounds and themes.
@@ -204,8 +219,11 @@ the on-screen bubble. Everything lives in
 
 | Key | Default | |
 |---|---|---|
-| `claudeModel` | `haiku` | Model that plans requests |
-| `themeModel` | `sonnet` | Model that designs themes |
+| `brain` | `claude` | `claude` or `codex`: who plans requests, reads out answers and designs themes |
+| `claudeModel` | `haiku` | Claude model that plans requests |
+| `themeModel` | `sonnet` | Claude model that designs themes |
+| `codexModel` | `gpt-6-luna` | Codex model that plans requests |
+| `codexThemeModel` | `gpt-6.1-sol` | Codex model that designs themes |
 | `silence` | `1.0` | Seconds of quiet that end a request (self-tunes) |
 | `maxSeconds` | `15` | Longest request |
 | `shortcut` | `copilot` | `copilot`, `off`, or a combination like `SUPER + ALT + J` |

@@ -16,7 +16,7 @@ Usage:
 
 Speech is recognized locally (faster-whisper) and spoken locally (Kokoro).
 Simple requests are handled by a built-in matcher; everything else goes to
-Claude through `claude -p`, which only returns a plan. This daemon runs the
+Claude (`claude -p`) or Codex (`codex exec`), which only return a plan. This daemon runs the
 plan, and only from the fixed set of actions below.
 """
 
@@ -69,8 +69,21 @@ THEMES_DIR = os.path.join(HOME, ".config/omarchy/themes")
 
 KOKORO_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/"
 KOKORO_FILES = ("kokoro-v1.0.onnx", "voices-v1.0.bin")
+# Downloads are checked against these. Kokoro publishes no checksums, so these
+# are of the release files as downloaded (twice, matching); Whisper's are the
+# Hugging Face LFS hashes at the pinned commit.
+KOKORO_SHA256 = {
+    "kokoro-v1.0.onnx": "7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5",
+    "voices-v1.0.bin": "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d",
+}
 STT_MODELS = ("base.en", "small.en")
-PIP_PACKAGES = ("faster-whisper", "kokoro-onnx")
+STT_PINS = {  # model: (Systran/faster-whisper-<model> commit, model.bin sha256)
+    "base.en": ("3d3d5dee26484f91867d81cb899cfcf72b96be6c",
+                "2a166925539a16005f14ff328359f9b9adb9dc4fb631bb3b227526862e93e2ef"),
+    "small.en": ("d1d751a5f8271d482d14ca55d9e2deeebbae577f",
+                 "62b2a45b05ee59acb4a5341b33ee35e041395d378d418a18acfe4c9e768ee37a"),
+}
+REQUIREMENTS = os.path.join(ROOT, "lib", "requirements.txt")
 
 DEFAULTS = {
     "speak": "auto",          # auto: answers, questions and errors | always | off
@@ -79,13 +92,16 @@ DEFAULTS = {
     "sounds": True,
     "pauseMedia": True,
     "sttModel": "small.en",
+    "brain": "claude",        # claude | codex: who plans requests, reads out answers and designs themes
     "claudeModel": "haiku",
+    "codexModel": "gpt-6-luna",
     "silence": 1.0,           # seconds of quiet that end a request
     "instantStart": False,    # keep the mic open with a 1 s in-memory buffer
     "maxSeconds": 15,
     "followUp": True,         # listen again after the assistant asks a question
     "overlay": True,          # the bubble at the bottom of the screen
     "themeModel": "sonnet",   # Claude model that designs new themes
+    "codexThemeModel": "gpt-6.1-sol",
     "shortcut": "copilot",    # copilot | off | a Hyprland combo like "SUPER + ALT + J"
     "shortcutForce": "",      # a combo you chose to take over from another binding
     # A redirect URI registered in your Spotify developer app (Spotifast's own one works).
@@ -177,6 +193,43 @@ def run(cmd, timeout=8, input=None):
         return 1, "", str(e)
 
 
+def run_captured(argv, wait, stop_after=False, cwd=None):
+    """Run a command, keeping at most 4 KB of its output in memory (the rest is
+    read and dropped, so a command that prints forever can't fill a disk).
+    Returns (exit code or None if still running, output). With stop_after,
+    a command still running after `wait` seconds is stopped; otherwise it's
+    left running, detached, like a menu or an app."""
+    p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                         start_new_session=True, cwd=cwd or HOME)
+    buf = bytearray()
+    drained = threading.Event()
+
+    def drain():
+        try:
+            while True:
+                chunk = p.stdout.read1(65536)
+                if not chunk:
+                    break
+                if len(buf) < 4096:
+                    buf.extend(chunk[:4096 - len(buf)])
+        except (OSError, ValueError):
+            pass
+        drained.set()
+    threading.Thread(target=drain, daemon=True).start()
+    try:
+        code = p.wait(timeout=wait)
+        drained.wait(1)
+    except subprocess.TimeoutExpired:
+        code = None
+        if stop_after:
+            try:
+                os.killpg(p.pid, signal.SIGTERM)
+            except OSError:
+                pass
+    out = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\r", "", bytes(buf).decode(errors="replace")).strip()
+    return code, out
+
+
 def spawn(cmd):
     """Fire and forget, detached from the daemon so it outlives shell reloads."""
     subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -209,6 +262,14 @@ def models_ready():
     kokoro = all(os.path.exists(os.path.join(MODELS, f)) for f in KOKORO_FILES)
     stt = [m for m in STT_MODELS if os.path.exists(os.path.join(MODELS, "whisper-" + m, "model.bin"))]
     return {"venv": bool(venv_python()), "kokoro": kokoro, "stt": stt}
+
+
+def drop_nulls(v):
+    if isinstance(v, dict):
+        return {k: drop_nulls(x) for k, x in v.items() if x is not None}
+    if isinstance(v, list):
+        return [drop_nulls(x) for x in v]
+    return v
 
 
 def find_claude():
@@ -537,8 +598,9 @@ OMARCHY_RULES = [
     ("omarchy powerprofiles list", "allow"), ("omarchy powerprofiles set", "allow"),
     ("omarchy reminder", "allow"),
     ("omarchy restart", "confirm"),
-    ("omarchy screensaver", "allow"),
+    ("omarchy screensaver", "block"),             # a TUI; "omarchy launch screensaver" opens it in a terminal
     ("omarchy share", "allow"),
+    ("omarchy system shutdown", "confirm"),     # always asks; reboot and logout stay blocked
     ("omarchy system lock", "allow"), ("omarchy system stats", "allow"), ("omarchy system wake", "allow"),
     ("omarchy theme install", "block"), ("omarchy theme bg cache", "block"),
     ("omarchy theme remove", "confirm"), ("omarchy theme update", "confirm"), ("omarchy theme", "allow"),
@@ -606,20 +668,32 @@ class Catalog:
 
     def check(self, route, args):
         """The command to run for a planned route + args, or Fail."""
-        route = " ".join(str(route or "").split())
-        if not route.startswith("omarchy "):
-            route = "omarchy " + route
+        words = str(route or "").split()
+        if words[:1] != ["omarchy"]:
+            words = ["omarchy"] + words
         self.refresh()
-        c = self.items.get(route)
-        if not c:
-            raise Fail("I'm not allowed to run %s" % route)
-        args = [str(x) for x in (args or [])]
+        # The longest listed route the planned command starts with; anything
+        # after it ("omarchy plugin disable grivera.airwaves") is an argument.
+        for n in range(len(words), 1, -1):
+            c = self.items.get(" ".join(words[:n]))
+            if c:
+                break
+        else:
+            raise Fail("I'm not allowed to run %s" % " ".join(words))
+        route = c["route"]
+        args = words[n:] + [str(x) for x in (args or [])]
+        if any(re.fullmatch(r"[<\[].*[>\]]|\.\.\.", x) for x in args):
+            raise Fail("I didn't know what to fill in for %s" % next(x for x in args if re.fullmatch(r"[<\[].*[>\]]|\.\.\.", x)))
         if len(args) > 8 or any(len(x) > 200 or "\n" in x or "\0" in x for x in args):
             raise Fail("Those arguments don't look right")
         if c["tier"] == "noargs" and args:
             raise Fail("I can only open a plain terminal")
         return c, ["omarchy"] + route.split()[1:] + args
 
+
+# Codex agent features a planner doesn't need: fewer tools, a smaller request.
+CODEX_OFF = ("shell_tool", "apps", "plugins", "multi_agent", "image_generation", "browser_use", "computer_use",
+             "goals", "hooks", "skill_search", "sleep_tool", "code_mode_host", "shell_snapshot")
 
 REPORT_PROMPT = ("You are a desktop voice assistant. The user asked a question, and commands were run to "
                  "find the answer. Reply with what to say out loud: one or two short, natural sentences "
@@ -1001,6 +1075,9 @@ def quick_plan(text, snap, apps):
         return {"actions": [A("media", value="next")]}
     if re.fullmatch(r"(previous|last|go back)( song| track| station| one)?", s):
         return {"actions": [A("media", value="previous")]}
+    if re.fullmatch(r"(shut ?down|power (off|down)|turn off|switch off)( the| my)?( computer| laptop| pc| system| machine)?|shut (the |my )?(computer|laptop|pc|system|machine)? ?down", s) \
+            and s not in ("turn off", "switch off"):
+        return {"actions": [A("omarchy", command="omarchy system shutdown")]}
     if re.fullmatch(r"lock( the| my)?( screen| computer| laptop)?", s):
         return {"actions": [A("lock_screen")]}
     m = re.fullmatch(r"(turn )?(on |off )?(the )?night ?light( on| off)?", s)
@@ -1585,7 +1662,7 @@ class Daemon:
         self.convo = []
         self.rec = None
         self.press_at = 0.0
-        self.claude_proc = None
+        self.brain_proc = None
         self.player = None
         self.paused = []
         self.setup_proc = None
@@ -1618,6 +1695,8 @@ class Daemon:
             "ready": self.ready,
             "setup": self.setup_line,
             "claude": bool(find_claude()),
+            "codex": bool(find_codex()),
+            "brain": self.brain()[0],
             "missed": self.missed[-10:][::-1],
             "shortcut": self.shortcut_state,
             "learned": len(self.plans),
@@ -1795,13 +1874,13 @@ class Daemon:
         if self.rec:
             self.rec.stop("cancel")
             self.rec = None
-        for p in (self.claude_proc, self.player):
+        for p in (self.brain_proc, self.player):
             if p and p.poll() is None:
                 try:
                     os.killpg(p.pid, signal.SIGTERM)
                 except OSError:
                     pass
-        self.claude_proc = self.player = None
+        self.brain_proc = self.player = None
 
     def cancel(self, why=""):
         with self.lock:
@@ -2012,16 +2091,18 @@ class Daemon:
             ph, caps = found
             plan, via = {"actions": [{"tool": "phrase", "index": ph["index"], "args": caps}], "say": ph["reply"]}, "phrase"
         if plan is None:
+            plan = self.plugin_plan(norm)
+        if plan is None:
             plan = quick_plan(text, snap, self.apps)
         if plan is None and norm in self.plans:
             entry = self.plans[norm]
             entry["uses"], entry["t"] = entry.get("uses", 0) + 1, int(time.time())
             plan, via = json.loads(json.dumps(entry["plan"])), "remembered"
         if plan is None:
-            via = "claude"
+            via = self.brain()[0] or "claude"
             t0 = time.time()
             try:
-                plan = self.ask_claude(text, snap, gen)
+                plan = self.ask_brain(text, snap, gen)
             except Fail as e:
                 if gen == self.gen:
                     self.earcon("error")
@@ -2032,10 +2113,7 @@ class Daemon:
             return
         self.execute(gen, plan, snap, text, via)
 
-    def ask_claude(self, text, snap, gen):
-        claude = find_claude()
-        if not claude:
-            raise Fail("I can't find the Claude Code CLI")
+    def ask_brain(self, text, snap, gen):
         now = datetime.now()
         lines = ["Now: %s" % now.strftime("%A %d %B %Y, %H:%M"),
                  "Active workspace: %s" % snap["workspace"], "", "Open windows (w1 is the active one):"]
@@ -2050,6 +2128,12 @@ class Daemon:
         lines += ["", "Installed apps (id: name):"]
         lines += ["  %s: %s" % (a["id"], a["name"]) for a in self.apps.items]
         lines += ["", "Themes: %s" % ", ".join(self.themes())]
+        plugins = self.shell_plugins()
+        if plugins:
+            lines += ["", "Omarchy shell plugins (id: name, on/off). Enable or disable them with "
+                          "`omarchy plugin enable <id>` / `omarchy plugin disable <id>`:"]
+            lines += ["  %s: %s (%s)" % (p["id"], p.get("name") or p["id"], "on" if p.get("enabled") else "off")
+                      for p in plugins if self.toggleable(p)]
         recent = [c for c in self.convo if time.time() - c["t"] < 180][-4:]
         if recent:
             lines += ["", "Earlier in this conversation:"]
@@ -2058,45 +2142,9 @@ class Daemon:
                 lines.append("  You: %s" % json.dumps(c["you"]))
         lines += ["", "The user said: %s" % json.dumps(text)]
 
-        cmd = [claude, "-p", "--model", self.cfg["claudeModel"], "--tools", "", "--strict-mcp-config",
-               "--disable-slash-commands", "--no-session-persistence", "--setting-sources", "",
-               "--system-prompt-file", self.prompt_file(), "--json-schema", json.dumps(PLAN_SCHEMA),
-               "--output-format", "json"]
-        env = {k: v for k, v in os.environ.items() if k not in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")}
-        try:
-            p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                 text=True, cwd=STATE_DIR, env=env, start_new_session=True)
-        except OSError as e:
-            raise Fail("Couldn't start Claude: %s" % e)
-        with self.lock:
-            if gen != self.gen:
-                p.kill()
-                raise Fail("Cancelled")
-            self.claude_proc = p
-        try:
-            out, err = p.communicate("\n".join(lines), timeout=60)
-        except subprocess.TimeoutExpired:
-            p.kill()
-            raise Fail("Claude took too long to answer")
-        finally:
-            with self.lock:
-                if self.claude_proc is p:
-                    self.claude_proc = None
-        if gen != self.gen:
-            raise Fail("Cancelled")
-        try:
-            d = json.loads(out)
-        except ValueError:
-            msg = (err or out or "").strip().splitlines()
-            raise Fail("Claude failed: %s" % (msg[-1][:120] if msg else "no output"))
-        if d.get("is_error"):
-            raise Fail("Claude failed: %s" % str(d.get("result") or d.get("subtype"))[:120])
-        plan = d.get("structured_output")
+        plan = self.think("\n".join(lines), self.prompt_file(), PLAN_SCHEMA, timeout=60, gen=gen)
         if not isinstance(plan, dict):
-            try:
-                plan = json.loads(d.get("result") or "")
-            except ValueError:
-                raise Fail("Claude's answer wasn't a plan")
+            raise Fail("%s's answer wasn't a plan" % self.brain_name())
         plan.setdefault("actions", [])
         plan.setdefault("say", "")
         return plan
@@ -2149,7 +2197,7 @@ class Daemon:
         self.set(status="acting")
         done, failed = [], []
         self.cmd_outputs = []
-        self.cmd_wait = 30 if plan.get("report") else 4
+        self.cmd_wait = 15 if plan.get("report") else 4
         live = {c.get("address") for c in (hypr("clients") or [])}
         for a in actions:
             if gen != self.gen:
@@ -2375,22 +2423,7 @@ class Daemon:
         cmd = ph["run"]
         for i, cap in enumerate(a.get("args") or [], 1):
             cmd = cmd.replace("{%d}" % i, shlex.quote(cap))
-        out_path = os.path.join(RUNTIME, "jarvis-%d.out" % time.time_ns())
-        fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            p = subprocess.Popen(["bash", "-c", cmd], stdout=f, stderr=subprocess.STDOUT,
-                                 stdin=subprocess.DEVNULL, start_new_session=True, cwd=HOME)
-        try:
-            code = p.wait(timeout=4)
-        except subprocess.TimeoutExpired:
-            code = None
-        try:
-            with open(out_path, errors="replace") as f:
-                out = f.read(2000).strip()
-        except OSError:
-            out = ""
-        if code is not None:
-            os.unlink(out_path)
+        code, out = run_captured(["bash", "-c", cmd], 4)
         if code not in (None, 0):
             raise Fail("Your phrase's command failed%s" % (": " + out.splitlines()[-1][:100] if out else ""))
         return "Ran your phrase \"%s\"" % ph["say"][0]
@@ -2516,31 +2549,61 @@ class Daemon:
 
     # ---- Omarchy's own commands
 
+    def plugin_plan(self, s):
+        """"disable the airwaves plugin", "show the weather widget": instant."""
+        m = re.fullmatch(r"(?P<verb>disable|turn off|switch off|hide|enable|turn on|switch on|show)( the| my)? "
+                         r"(?P<what>.+?) (plugin|widget|extension)( in the bar| from the bar| on the bar)?", s) \
+            or re.fullmatch(r"(?P<verb>hide|show) (the |my )?(?P<what>.+?) (in|from|on) the bar", s)
+        if not m:
+            return None
+        scored = [(max(similarity(m.group("what"), p.get("name") or ""), similarity(m.group("what"), p["id"].split(".")[-1])), p)
+                  for p in self.shell_plugins() if self.toggleable(p)]
+        sc, p = max(scored, key=lambda x: x[0], default=(0, None))
+        if not p or sc < 0.8:
+            return None                 # let Claude sort it out (it has the list too)
+        on = m.group("verb") in ("enable", "turn on", "switch on", "show")
+        return {"actions": [{"tool": "omarchy", "command": "omarchy plugin %s" % ("enable" if on else "disable"),
+                             "args": [p["id"]]}]}
+
+    PROTECTED_PLUGINS = ("grivera.jarvis", "omarchy.bar", "omarchy.menu")
+
+    def toggleable(self, p):
+        """Only bar widgets: the lock screen, idle, notifications, polkit and
+        other background services must never be switched off by voice."""
+        return "bar-widget" in (p.get("kinds") or []) and p["id"] not in self.PROTECTED_PLUGINS \
+            and p.get("canDisable", True) is not False
+
+    def check_plugin_toggle(self, route, pid):
+        known = {p["id"]: p for p in self.shell_plugins()}
+        if pid == "grivera.jarvis" and route.endswith("disable"):
+            raise Fail("I can't switch myself off. Use the Switchboard or omarchy plugin disable grivera.jarvis")
+        if pid not in known:
+            raise Fail("There's no shell plugin called %s" % (pid or "that"))
+        if not self.toggleable(known[pid]):
+            raise Fail("%s is part of how Omarchy runs, so I won't turn it on or off" % (known[pid].get("name") or pid))
+
+    def shell_plugins(self):
+        """Installed Omarchy shell plugins, cached for a minute."""
+        cached = getattr(self, "_plugins", (0, []))
+        if time.time() - cached[0] < 60:
+            return cached[1]
+        code, out, _ = run(["omarchy", "plugin", "list", "--json"], timeout=10)
+        try:
+            items = [p for p in json.loads(out) if isinstance(p, dict) and p.get("id")] if code == 0 else []
+        except ValueError:
+            items = []
+        self._plugins = (time.time(), items)
+        return items
+
     def run_omarchy(self, a):
         c, argv = self.catalog.check(a.get("command"), a.get("args"))
+        if c["route"] in ("omarchy plugin enable", "omarchy plugin disable"):
+            self.check_plugin_toggle(c["route"], argv[3] if len(argv) > 3 else "")
+            self._plugins = (0, [])
         label = " ".join(argv[1:])
-        out_path = os.path.join(RUNTIME, "jarvis-%d.out" % time.time_ns())
-        fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            p = subprocess.Popen(argv, stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                 start_new_session=True)
-        try:
-            code = p.wait(timeout=self.cmd_wait)
-        except subprocess.TimeoutExpired:
-            code = None                 # a menu, app or recording: leave it running
-        try:
-            with open(out_path, errors="replace") as f:
-                out = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", f.read(4000)).strip()
-        except OSError:
-            out = ""
-        if code is not None:
-            try:
-                os.unlink(out_path)
-            except OSError:
-                pass
-        else:
-            threading.Thread(target=lambda: (p.wait(), os.path.exists(out_path) and os.unlink(out_path)),
-                             daemon=True).start()
+        # When the output answers a question, stop the command once it's had
+        # its time (speed tests and other live measurements never exit).
+        code, out = run_captured(argv, self.cmd_wait, stop_after=self.cmd_wait > 4)
         self.cmd_outputs.append({"command": label, "exit": code, "output": out[:1500]})
         if code not in (None, 0) and not out:
             raise Fail("%s didn't work" % label)
@@ -2553,23 +2616,135 @@ class Daemon:
 
     def report(self, heard, outputs):
         """Turn command output into a short spoken answer."""
-        claude = find_claude()
-        if not claude:
-            return ""
         msg = "Question: %s\n\nCommands and their output:\n%s" % (
             json.dumps(heard), "\n".join("$ %s (exit %s)\n%s" % (o["command"], o["exit"], o["output"] or "(no output)")
                                          for o in outputs))
+        try:
+            return str(self.think(msg, self.report_prompt_file(), timeout=45) or "").strip()
+        except Fail:
+            return outputs[-1]["output"].splitlines()[0][:200] if outputs[-1]["output"] else ""
+
+    def report_prompt_file(self):
+        path = os.path.join(STATE_DIR, "report-prompt.md")
+        try:
+            with open(path) as f:
+                if f.read() == REPORT_PROMPT:
+                    return path
+        except OSError:
+            pass
+        with open(path, "w") as f:
+            f.write(REPORT_PROMPT)
+        return path
+
+    # ---- the cloud model: Claude Code or Codex, used only as a planner (no tools)
+
+    def brain(self):
+        """(name, cli path) of the configured planner, falling back to the
+        other one if it isn't installed; (None, None) when neither is."""
+        order = ("codex", "claude") if self.cfg.get("brain") == "codex" else ("claude", "codex")
+        for name in order:
+            path = find_codex() if name == "codex" else find_claude()
+            if path:
+                return name, path
+        return None, None
+
+    def brain_name(self):
+        return {"codex": "Codex", "claude": "Claude"}.get(self.brain()[0], "Claude")
+
+    def think(self, msg, system_file, schema=None, timeout=60, gen=None, theme=False):
+        """One tool-less model call. Returns the parsed object with a schema,
+        otherwise the reply text. With gen, the call is cancellable."""
+        name, cli = self.brain()
+        if not cli:
+            raise Fail("I can't find Claude Code or Codex")
+        label = "Codex" if name == "codex" else "Claude"
+        out_file = None
+        if name == "codex":
+            model = self.cfg.get("codexThemeModel" if theme else "codexModel") or DEFAULTS["codexModel"]
+            work = os.path.join(STATE_DIR, "codex-brain")
+            os.makedirs(work, exist_ok=True)
+            out_file = os.path.join(work, "reply-%d-%d.txt" % (os.getpid(), threading.get_ident()))
+            cmd = [cli, "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+                   "--sandbox", "read-only", "-C", work, "-m", model, "-c", "model_reasoning_effort=low",
+                   "-c", "model_instructions_file=" + json.dumps(system_file), "-c", 'web_search="disabled"',
+                   "-o", out_file]
+            for feature in CODEX_OFF:
+                cmd += ["--disable", feature]
+            # Not --output-schema: its strict decoding garbles the fast models' answers
+            # (half the plans had broken window ids), while asking in words works.
+            if schema:
+                msg += "\n\nReply with only a JSON object matching this schema:\n" + json.dumps(schema)
+            cmd.append("-")
+        else:
+            model = (self.cfg.get("themeModel") or "sonnet") if theme else self.cfg["claudeModel"]
+            cmd = [cli, "-p", "--model", model, "--tools", "", "--strict-mcp-config",
+                   "--disable-slash-commands", "--no-session-persistence", "--setting-sources", "",
+                   "--system-prompt-file", system_file, "--output-format", "json"]
+            if schema:
+                cmd += ["--json-schema", json.dumps(schema)]
         env = {k: v for k, v in os.environ.items() if k not in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")}
         try:
-            p = subprocess.run([claude, "-p", "--model", self.cfg["claudeModel"], "--tools", "", "--strict-mcp-config",
-                                "--disable-slash-commands", "--no-session-persistence", "--setting-sources", "",
-                                "--system-prompt", REPORT_PROMPT, "--output-format", "json"],
-                               input=msg, capture_output=True, text=True, timeout=45, cwd=STATE_DIR, env=env,
-                               start_new_session=True)
-            d = json.loads(p.stdout)
-            return "" if d.get("is_error") else str(d.get("result") or "").strip()
-        except (OSError, ValueError, subprocess.TimeoutExpired):
-            return outputs[-1]["output"].splitlines()[0][:200] if outputs[-1]["output"] else ""
+            p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 text=True, cwd=STATE_DIR, env=env, start_new_session=True)
+        except OSError as e:
+            raise Fail("Couldn't start %s: %s" % (label, e))
+        if gen is not None:
+            with self.lock:
+                if gen != self.gen:
+                    p.kill()
+                    raise Fail("Cancelled")
+                self.brain_proc = p
+        try:
+            out, err = p.communicate(msg, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            p.communicate()
+            raise Fail("%s took too long to answer" % label)
+        finally:
+            if gen is not None:
+                with self.lock:
+                    if self.brain_proc is p:
+                        self.brain_proc = None
+        if gen is not None and gen != self.gen:
+            raise Fail("Cancelled")
+
+        if name == "codex":
+            try:
+                with open(out_file) as f:
+                    result = f.read()
+                os.unlink(out_file)
+            except OSError:
+                result = ""
+            if p.returncode or not result.strip():
+                msg_lines = [l for l in (err or out or "").strip().splitlines() if l.strip()]
+                raise Fail("Codex failed: %s" % (msg_lines[-1][:120] if msg_lines else "no answer"))
+            if not schema:
+                return result.strip()
+            start, end = result.find("{"), result.rfind("}")
+            try:
+                return drop_nulls(json.loads(result[start:end + 1]))
+            except ValueError:
+                raise Fail("Codex's answer wasn't valid")
+
+        try:
+            d = json.loads(out)
+        except ValueError:
+            msg_lines = (err or out or "").strip().splitlines()
+            raise Fail("Claude failed: %s" % (msg_lines[-1][:120] if msg_lines else "no output"))
+        if d.get("is_error"):
+            raise Fail("Claude failed: %s" % str(d.get("result") or d.get("subtype"))[:120])
+        if not schema:
+            return d.get("result") or ""
+        result = d.get("structured_output")
+        if not isinstance(result, dict):
+            try:
+                result = json.loads(d.get("result") or "")
+            except ValueError:
+                raise Fail("Claude's answer wasn't valid")
+        return result
 
     # ---- backgrounds from Codex
 
@@ -2679,12 +2854,10 @@ class Daemon:
             ok, msg, done = True, "Your new theme, %s, is ready." % name, ["New theme: %s" % name]
         except Fail as e:
             ok, msg, done = False, "I couldn't make the theme. %s" % e, []
-        self.job_done("(theme) " + (what or "something new"), ok, msg, done, "claude + codex")
+        self.job_done("(theme) " + (what or "something new"), ok, msg, done,
+                      "codex" if self.brain()[0] == "codex" else "claude + codex")
 
     def design_theme(self, what):
-        claude = find_claude()
-        if not claude:
-            raise Fail("I can't find the Claude Code CLI")
         icons = sorted(d for d in os.listdir("/usr/share/icons") if d.startswith("Yaru"))
         existing = self.themes()
         msg = "\n".join([
@@ -2692,22 +2865,12 @@ class Daemon:
             "Existing themes (don't reuse these names): %s" % ", ".join(existing),
             "Icon sets available: %s" % ", ".join(icons),
         ])
-        cmd = [claude, "-p", "--model", self.cfg.get("themeModel") or "sonnet", "--tools", "",
-               "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence",
-               "--setting-sources", "", "--system-prompt-file", THEME_PROMPT_FILE,
-               "--json-schema", json.dumps(THEME_SCHEMA), "--output-format", "json"]
-        env = {k: v for k, v in os.environ.items() if k not in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")}
         try:
-            p = subprocess.run(cmd, input=msg, capture_output=True, text=True, timeout=240,
-                               cwd=STATE_DIR, env=env, start_new_session=True)
-            d = json.loads(p.stdout)
-        except subprocess.TimeoutExpired:
-            raise Fail("Designing it took too long.")
-        except (OSError, ValueError):
-            raise Fail("Claude didn't return a design.")
-        t = d.get("structured_output")
-        if d.get("is_error") or not isinstance(t, dict):
-            raise Fail("Claude didn't return a design.")
+            t = self.think(msg, THEME_PROMPT_FILE, THEME_SCHEMA, timeout=240, theme=True)
+        except Fail as e:
+            raise Fail("Designing it took too long." if "too long" in str(e) else "%s didn't return a design." % self.brain_name())
+        if not isinstance(t, dict):
+            raise Fail("%s didn't return a design." % self.brain_name())
         colors = t.get("colors") or {}
         bad = [k for k in THEME_COLORS if not re.fullmatch(r"#[0-9A-Fa-f]{6}", str(colors.get(k, "")))]
         for k in ("bar_text", "bar_active"):
@@ -2922,7 +3085,7 @@ class Daemon:
             self.plans.pop(key, None)
             save_json(PLANS_FILE, self.plans)
             return
-        if via != "claude" or failed or not done or not key:
+        if via not in ("claude", "codex") or failed or not done or not key:
             return
         acts = plan.get("actions") or []
         if plan.get("listen") or plan.get("confirm") or not acts:
@@ -3176,6 +3339,15 @@ class Daemon:
 
 # ---------------------------------------------------------------- setup
 
+def sha256_file(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def setup():
     def say(msg):
         print(msg, flush=True)
@@ -3186,8 +3358,8 @@ def setup():
             sys.exit("Couldn't create %s" % VENV)
     py = venv_python()
     say("Installing faster-whisper and kokoro-onnx (a few hundred MB)…")
-    if subprocess.call([py, "-m", "pip", "install", "-q", "--upgrade", "pip"] + list(PIP_PACKAGES)) != 0:
-        sys.exit("pip install failed")
+    if subprocess.call([py, "-m", "pip", "install", "-q", "--require-virtualenv", "-r", REQUIREMENTS]) != 0:
+        sys.exit("pip couldn't install the tested versions for Python %d.%d" % sys.version_info[:2])
     import urllib.request
     for f in KOKORO_FILES:
         dest = os.path.join(MODELS, f)
@@ -3196,17 +3368,25 @@ def setup():
         say("Downloading voice model %s…" % f)
         tmp = dest + ".part"
         urllib.request.urlretrieve(KOKORO_URL + f, tmp)
+        if sha256_file(tmp) != KOKORO_SHA256[f]:
+            os.unlink(tmp)
+            sys.exit("%s didn't match its checksum; nothing was installed" % f)
         os.replace(tmp, dest)
     for m in STT_MODELS:
         dest = os.path.join(MODELS, "whisper-" + m)
         if os.path.exists(os.path.join(dest, "model.bin")):
             continue
         say("Downloading speech model %s…" % m)
+        revision, digest = STT_PINS[m]
         code = subprocess.call([py, "-c", "import sys\nfrom faster_whisper import download_model\n"
-                                "download_model(sys.argv[1], output_dir=sys.argv[2])", m, dest],
+                                "download_model(sys.argv[1], output_dir=sys.argv[2], revision=sys.argv[3])",
+                                m, dest, revision],
                                env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
         if code != 0:
             sys.exit("Couldn't download %s" % m)
+        if sha256_file(os.path.join(dest, "model.bin")) != digest:
+            shutil.rmtree(dest, ignore_errors=True)
+            sys.exit("Speech model %s didn't match its checksum; nothing was installed" % m)
     say("Done.")
 
 

@@ -300,7 +300,7 @@ Panel {
                       anchors.right: parent.right
                       anchors.baseline: heardText.baseline
                       textFormat: Text.PlainText
-                      text: root.clock(modelData.t) + (({ claude: "  ·  Claude", remembered: "  ·  remembered", phrase: "  ·  your phrase" })[modelData.via] || "")
+                      text: root.clock(modelData.t) + (({ claude: "  ·  Claude", codex: "  ·  Codex", remembered: "  ·  remembered", phrase: "  ·  your phrase" })[modelData.via] || "")
                       color: root.dim
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
@@ -459,6 +459,36 @@ Panel {
               }
             }
 
+            PanelSectionHeader { text: "CLOUD MODEL"; foreground: root.fg; fontFamily: root.fontFamily }
+
+            ButtonGroup {
+              visible: root.st.claude !== false && root.st.codex !== false
+              options: [
+                { value: "claude", label: "Claude", tooltip: "Claude Code (" + (root.config.claudeModel || "haiku") + "): about 3 s" },
+                { value: "codex", label: "Codex", tooltip: "Codex (" + (root.config.codexModel || "gpt-6-luna") + "): about 5 s" }
+              ]
+              value: root.config.brain || "claude"
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              focusable: false
+              onChanged: function(v) { if (root.svc) root.svc.setConfig("brain", v) }
+            }
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: root.st.claude === false && root.st.codex === false
+                ? "Simple commands run instantly. Install Claude Code or Codex for everything else."
+                : "Simple commands run instantly; anything else goes to "
+                  + (root.st.brain === "codex" ? "Codex (" + (root.config.codexModel || "gpt-6-luna") + ") through your Codex login."
+                                               : "Claude (" + (root.config.claudeModel || "haiku") + ") through your Claude Code login.")
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
             PanelSectionHeader { text: "SPOKEN REPLIES"; foreground: root.fg; fontFamily: root.fontFamily }
 
             ButtonGroup {
@@ -561,7 +591,7 @@ Panel {
               text: ph.error ? ph.error
                 : (ph.count || 0) + " phrase" + ((ph.count || 0) === 1 ? "" : "s") + " of your own, and "
                   + (root.st.learned || 0) + " request" + ((root.st.learned || 0) === 1 ? "" : "s")
-                  + " learned from Claude (those run instantly next time), "
+                  + " learned from " + (root.st.brain === "codex" ? "Codex" : "Claude") + " (those run instantly next time), "
                   + (root.st.corrections || 0) + " mishearing" + ((root.st.corrections || 0) === 1 ? "" : "s") + " corrected and "
                   + (root.st.vocab || 0) + " name" + ((root.st.vocab || 0) === 1 ? "" : "s") + " picked up for recognition."
               color: ph.error ? root.urgent : root.dim
@@ -657,19 +687,6 @@ Panel {
               fontFamily: root.fontFamily
               checked: root.config.overlay !== false
               onClicked: if (root.svc) root.svc.setConfig("overlay", !checked)
-            }
-
-            Text {
-              width: parent.width
-              topPadding: Style.space(4)
-              textFormat: Text.PlainText
-              text: "Simple commands run instantly; anything else goes to Claude ("
-                + (root.config.claudeModel || "haiku") + ") through your Claude Code login."
-                + (root.st.claude === false ? " Claude Code isn't installed, so only the built-in commands work." : "")
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
             }
 
             Button {
