@@ -73,7 +73,10 @@ rm -rf ~/.local/share/grivera-jarvis ~/.local/state/grivera-jarvis ~/.config/gri
   can run over a hundred of its commands: screen recording, screenshots and OCR, Bluetooth,
   night light, do not disturb, power profiles, fonts, themes and backgrounds,
   menus and switchers, keyboard backlight, brightness, audio outputs,
-  reminders, webapps, network status and speed tests, and more.
+  webapps, network status and speed tests, and more.
+- Reminders: "remind me in 20 minutes to take the pizza out", "remind me at
+  5 to call mom", "what are my reminders?", "clear my reminders". Jarvis keeps
+  them itself and shows them as desktop notifications.
 - Bar widgets on and off: "disable the Airwaves plugin", "hide the weather
   widget", "show the SpaceX plugin". Only bar widgets: the lock screen, idle,
   notifications and other background services, the bar, the menu and Jarvis
@@ -114,7 +117,7 @@ rm -rf ~/.local/share/grivera-jarvis ~/.local/state/grivera-jarvis ~/.config/gri
 
   [[phrase]]
   say = "note *"                       # * captures words, passed as {1}
-  run = "echo {1} >> ~/notes.txt"      # captures are shell-quoted for you
+  run = "echo {1} >> ~/notes.txt"      # {1} is passed safely, as a variable
   ```
 
   Your phrases are checked before anything else and reload when you save.
@@ -205,8 +208,12 @@ Only your own phrases run shell commands, and they're yours to write.
   press the key, but your system shows the mic as in use. With it off, the
   mic opens only when you press the key, and a word said in that first
   fraction of a second can be lost.
-- History, learned data and the Spotify sign-in stay in
-  `~/.local/state/grivera-jarvis/` (files readable only by you).
+- History, learned data, reminders and the Spotify sign-in stay in
+  `~/.local/state/grivera-jarvis/` (files readable only by you). What you say
+  is never put on a command line, where other local users could read it:
+  reminders go to the notification server over D-Bus, and words captured by
+  your phrases reach their command as environment variables. Opening a
+  website or a Spotify search hands the link to the app, as any launcher does.
 
 ## Requirements
 
@@ -296,7 +303,7 @@ The CLI is `~/.config/omarchy/plugins/grivera.jarvis/bin/jarvis`.
 ## Files
 
 - `~/.local/share/grivera-jarvis/`: Python environment and models
-- `~/.local/state/grivera-jarvis/`: settings, history, learned data, Spotify sign-in
+- `~/.local/state/grivera-jarvis/`: settings, history, learned data, reminders, Spotify sign-in
 - `~/.config/grivera-jarvis/phrases.toml`: your phrases
 - `$XDG_RUNTIME_DIR/grivera-jarvis.sock`: the CLI's socket
 

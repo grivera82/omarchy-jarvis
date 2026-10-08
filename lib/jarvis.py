@@ -26,6 +26,7 @@ import re
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -194,14 +195,14 @@ def run(cmd, timeout=8, input=None):
         return 1, "", str(e)
 
 
-def run_captured(argv, wait, stop_after=False, cwd=None):
+def run_captured(argv, wait, stop_after=False, cwd=None, env=None):
     """Run a command, keeping at most 4 KB of its output in memory (the rest is
     read and dropped, so a command that prints forever can't fill a disk).
     Returns (exit code or None if still running, output). With stop_after,
     a command still running after `wait` seconds is stopped; otherwise it's
     left running, detached, like a menu or an app."""
     p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                         start_new_session=True, cwd=cwd or HOME)
+                         start_new_session=True, cwd=cwd or HOME, env=env)
     buf = bytearray()
     drained = threading.Event()
 
@@ -577,7 +578,7 @@ def mpris_call(name, method):
 # is blocked. "confirm" commands wait for a spoken yes.
 OMARCHY_RULES = [
     ("omarchy launch floating terminal", "block"), ("omarchy launch or focus", "block"),
-    ("omarchy launch tui", "block"), ("omarchy launch config editor", "allow"),
+    ("omarchy launch tui", "block"), ("omarchy launch openclaw", "block"), ("omarchy launch config editor", "allow"),
     ("omarchy launch terminal", "noargs"), ("omarchy launch", "allow"),
     ("omarchy audio input set default", "block"), ("omarchy audio output set default", "block"),
     ("omarchy audio tuning", "block"), ("omarchy audio sink availability", "block"), ("omarchy audio", "allow"),
@@ -594,10 +595,12 @@ OMARCHY_RULES = [
     ("omarchy menu file", "block"), ("omarchy menu input", "block"), ("omarchy menu select", "block"),
     ("omarchy menu images", "block"), ("omarchy menu", "allow"),
     ("omarchy network band", "confirm"), ("omarchy network speedtest", "allow"), ("omarchy network status", "allow"),
-    ("omarchy notification", "allow"),
-    ("omarchy osd", "allow"),
+    # These take free text (a message, a headline) that would end up on a command
+    # line; Jarvis's own reminder tool covers reminders.
+    ("omarchy notification send", "block"), ("omarchy notification", "allow"),
+    ("omarchy osd", "block"),
     ("omarchy powerprofiles list", "allow"), ("omarchy powerprofiles set", "allow"),
-    ("omarchy reminder", "allow"),
+    ("omarchy reminder", "block"),
     ("omarchy restart", "confirm"),
     ("omarchy screensaver", "block"),             # a TUI; "omarchy launch screensaver" opens it in a terminal
     ("omarchy share", "allow"),
@@ -700,6 +703,300 @@ REPORT_PROMPT = ("You are a desktop voice assistant. The user asked a question, 
                  "find the answer. Reply with what to say out loud: one or two short, natural sentences "
                  "that answer the question from the command output. No markdown, no lists, no emoji. Round "
                  "numbers sensibly and say units naturally. If the output doesn't answer it, say so briefly.")
+
+
+# ---------------------------------------------------------------- notifications
+#
+# Reminders are shown by talking to the notification server over the session
+# bus. notify-send (or `omarchy reminder`) would put the reminder's text on a
+# command line, where any local user can read it from /proc/<pid>/cmdline.
+# The D-Bus client is the one from grivera.agents.
+
+DBUS_ALIGN = {"y": 1, "b": 4, "i": 4, "u": 4, "x": 8, "t": 8, "d": 8,
+              "s": 4, "o": 4, "g": 1, "v": 1, "a": 4, "(": 8, "{": 8}
+DBUS_FIXED = {"y": "B", "b": "I", "i": "i", "u": "I", "x": "q", "t": "Q", "d": "d"}
+
+
+def dbus_types(sig):
+    """Split a signature into its complete types: "sa{sv}i" -> s, a{sv}, i."""
+    out, i = [], 0
+    while i < len(sig):
+        j = i
+        while sig[j] == "a":
+            j += 1
+        if sig[j] in "({":
+            depth = 0
+            while True:
+                depth += sig[j] in "({"
+                depth -= sig[j] in ")}"
+                j += 1
+                if not depth:
+                    break
+        else:
+            j += 1
+        out.append(sig[i:j])
+        i = j
+    return out
+
+
+def dbus_pad(buf, n):
+    buf.extend(b"\0" * (-len(buf) % n))
+
+
+def dbus_write(buf, sig, val):
+    """Append one value of complete type `sig`; variants are (signature, value)."""
+    c = sig[0]
+    if c in DBUS_FIXED:
+        dbus_pad(buf, DBUS_ALIGN[c])
+        buf.extend(struct.pack("<" + DBUS_FIXED[c], val))
+    elif c in "so":
+        raw = val.encode()
+        dbus_pad(buf, 4)
+        buf.extend(struct.pack("<I", len(raw)) + raw + b"\0")
+    elif c == "g":
+        buf.extend(bytes([len(val)]) + val.encode() + b"\0")
+    elif c == "v":
+        dbus_write(buf, "g", val[0])
+        dbus_write(buf, val[0], val[1])
+    elif c == "a":
+        dbus_pad(buf, 4)
+        at = len(buf)
+        buf.extend(b"\0\0\0\0")
+        dbus_pad(buf, DBUS_ALIGN[sig[1]])
+        start = len(buf)
+        for item in (val.items() if sig[1] == "{" else val):
+            dbus_write(buf, sig[1:], item)
+        struct.pack_into("<I", buf, at, len(buf) - start)
+    else:
+        dbus_pad(buf, 8)
+        for t, v in zip(dbus_types(sig[1:-1]), val):
+            dbus_write(buf, t, v)
+
+
+def dbus_read(data, pos, sig, end="<"):
+    """One value of complete type `sig` at `pos` -> (value, new pos)."""
+    c = sig[0]
+    pos += -pos % DBUS_ALIGN[c]
+    if c in DBUS_FIXED:
+        fmt = end + DBUS_FIXED[c]
+        return struct.unpack_from(fmt, data, pos)[0], pos + struct.calcsize(fmt)
+    if c in "so":
+        n = struct.unpack_from(end + "I", data, pos)[0]
+        return data[pos + 4:pos + 4 + n].decode("utf-8", "replace"), pos + 5 + n
+    if c == "g":
+        n = data[pos]
+        return data[pos + 1:pos + 1 + n].decode(), pos + 2 + n
+    if c == "v":
+        inner, pos = dbus_read(data, pos, "g", end)
+        return dbus_read(data, pos, inner, end)
+    if c == "a":
+        n = struct.unpack_from(end + "I", data, pos)[0]
+        pos += 4
+        pos += -pos % DBUS_ALIGN[sig[1]]
+        stop, items = pos + n, []
+        while pos < stop:
+            item, pos = dbus_read(data, pos, sig[1:], end)
+            items.append(item)
+        return (dict(items) if sig[1] == "{" else items), pos
+    vals = []
+    for t in dbus_types(sig[1:-1]):
+        v, pos = dbus_read(data, pos, t, end)
+        vals.append(v)
+    return tuple(vals), pos
+
+
+class SessionBus:
+    """Just enough of the D-Bus wire protocol to call methods and hear signals."""
+
+    def __init__(self, match=None, on_signal=None):
+        self.match = match              # AddMatch rule for the signals we want, if any
+        self.on_signal = on_signal      # (interface, member, args)
+        self.sock = None
+        self.serial = 0
+        self.pending = {}               # serial -> [Event, reply args, error name]
+        self.lock = threading.RLock()   # connect() calls Hello while holding it
+
+    def connect(self):
+        addrs = os.environ.get("DBUS_SESSION_BUS_ADDRESS") or \
+            "unix:path=%s/bus" % (os.environ.get("XDG_RUNTIME_DIR") or "/run/user/%d" % os.getuid())
+        for addr in addrs.split(";"):
+            kind, _, rest = addr.partition(":")
+            opts = dict(kv.split("=", 1) for kv in rest.split(",") if "=" in kv)
+            if kind != "unix" or not ("path" in opts or "abstract" in opts):
+                continue
+            path = opts.get("path") or "\0" + opts["abstract"]
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(5)
+            try:
+                sock.connect(path)
+                sock.sendall(b"\0AUTH EXTERNAL " + str(os.getuid()).encode().hex().encode() + b"\r\n")
+                reply = b""
+                while not reply.endswith(b"\r\n"):
+                    chunk = sock.recv(256)
+                    if not chunk:
+                        raise OSError("bus closed during auth")
+                    reply += chunk
+                if not reply.startswith(b"OK"):
+                    raise OSError("bus refused auth")
+                sock.sendall(b"BEGIN\r\n")
+            except OSError:
+                sock.close()
+                continue
+            sock.settimeout(None)
+            self.sock = sock
+            threading.Thread(target=self.reader, args=(sock,), daemon=True).start()
+            try:
+                calls = [("Hello", "", ())] + ([("AddMatch", "s", [self.match])] if self.match else [])
+                for member, sig, args in calls:
+                    self.call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                              member, sig, args)
+            except OSError:
+                self.drop()
+                raise
+            return
+        raise OSError("no session bus")
+
+    def call(self, dest, path, iface, member, sig="", args=(), reply=True):
+        body = bytearray()
+        for t, v in zip(dbus_types(sig), args):
+            dbus_write(body, t, v)
+        fields = [(1, ("o", path)), (2, ("s", iface)), (3, ("s", member)), (6, ("s", dest))]
+        if sig:
+            fields.append((8, ("g", sig)))
+        with self.lock:
+            if self.sock is None:
+                self.connect()
+            self.serial += 1
+            serial = self.serial
+            msg = bytearray(struct.pack("<cBBBII", b"l", 1, 0 if reply else 1, 1, len(body), serial))
+            dbus_write(msg, "a(yv)", fields)
+            dbus_pad(msg, 8)
+            waiter = self.pending[serial] = [threading.Event(), None, None] if reply else None
+            try:
+                self.sock.sendall(msg + body)
+            except OSError:
+                self.drop()
+                raise
+        if not reply:
+            return None
+        if not waiter[0].wait(5):
+            self.pending.pop(serial, None)
+            raise OSError("%s timed out" % member)
+        if waiter[2]:
+            raise OSError(waiter[2])
+        return waiter[1]
+
+    def drop(self):
+        sock, self.sock = self.sock, None
+        if sock:
+            sock.close()
+        for waiter in self.pending.values():
+            if waiter:
+                waiter[2] = "bus connection lost"
+                waiter[0].set()
+        self.pending.clear()
+
+    def reader(self, sock):
+        buf = b""
+
+        def need(n):
+            nonlocal buf
+            while len(buf) < n:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    raise OSError("bus closed")
+                buf += chunk
+
+        try:
+            while True:
+                need(16)
+                end = "<" if buf[:1] == b"l" else ">"
+                kind = buf[1]
+                body_len, _, fields_len = struct.unpack_from(end + "III", buf, 4)
+                start = 16 + fields_len + (-fields_len % 8)
+                need(start + body_len)
+                raw, buf = buf[:start + body_len], buf[start + body_len:]
+                fields = dict(dbus_read(raw, 12, "a(yv)", end)[0])
+                args, pos = [], start
+                for t in dbus_types(fields.get(8, "")):
+                    v, pos = dbus_read(raw, pos, t, end)
+                    args.append(v)
+                if kind in (2, 3):          # method return, error
+                    waiter = self.pending.pop(fields.get(5), None)
+                    if waiter:
+                        waiter[1], waiter[2] = args, (fields.get(4) if kind == 3 else None)
+                        waiter[0].set()
+                elif kind == 4 and self.on_signal:  # signal
+                    self.on_signal(fields.get(2), fields.get(3), args)
+        except (OSError, struct.error, ValueError, IndexError):
+            with self.lock:
+                if self.sock is sock:
+                    self.drop()
+
+
+NOTIFY_BUS = SessionBus()
+NOTIFY_LOCK = threading.Lock()
+
+
+def notify(summary, body, icon="appointment-soon", urgency=2):
+    with NOTIFY_LOCK:
+        try:
+            NOTIFY_BUS.call("org.freedesktop.Notifications", "/org/freedesktop/Notifications",
+                            "org.freedesktop.Notifications", "Notify", "susssasa{sv}i",
+                            ["Jarvis", 0, icon, summary, body, [], {"urgency": ("y", urgency)}, -1])
+            return True
+        except (OSError, IndexError):
+            return False
+
+
+REMINDERS_FILE = os.path.join(STATE_DIR, "reminders.json")
+
+
+class Reminders:
+    """Reminders kept by Jarvis itself, in an owner-only file so they survive
+    restarts. One that came due while Jarvis wasn't running shows when it starts."""
+
+    def __init__(self):
+        self.items = [r for r in load_json(REMINDERS_FILE, []) if isinstance(r, dict) and "due" in r]
+        self.cond = threading.Condition()
+
+    def save(self):
+        save_json(REMINDERS_FILE, self.items)
+
+    def add(self, minutes, text):
+        with self.cond:
+            if len(self.items) >= 50:
+                raise Fail("You already have 50 reminders")
+            self.items.append({"due": time.time() + minutes * 60, "text": text})
+            self.save()
+            self.cond.notify()
+
+    def clear(self):
+        with self.cond:
+            n, self.items = len(self.items), []
+            self.save()
+            return n
+
+    def upcoming(self):
+        with self.cond:
+            return sorted(self.items, key=lambda r: r["due"])
+
+    def run(self):
+        while True:
+            with self.cond:
+                now = time.time()
+                due = [r for r in self.items if r["due"] <= now]
+                if due:
+                    self.items = [r for r in self.items if r["due"] > now]
+                    self.save()
+                wait = min([r["due"] - now for r in self.items] + [3600])
+            for r in due:
+                text = r.get("text") or "Reminder"
+                if now - r["due"] > 120:
+                    text += " (it was due at %s)" % datetime.fromtimestamp(r["due"]).strftime("%-I:%M %p")
+                notify("Reminder", text)
+            with self.cond:
+                self.cond.wait(timeout=max(1, wait))
 
 
 # ---------------------------------------------------------------- Spotify Web API (search, your playlists)
@@ -1643,6 +1940,8 @@ class Daemon:
         self.lock = threading.RLock()
         self.cfg = dict(DEFAULTS, **load_json(CONFIG_FILE, {}))
         self.history = load_json(HISTORY_FILE, [])
+        self.reminders = Reminders()
+        self.tool_say = []
         if not self.cfg["shortcutChosen"] and (self.history or "shortcut" in load_json(CONFIG_FILE, {})):
             # Already in use before the first-run question existed: don't ask.
             self.cfg["shortcutChosen"] = True
@@ -2210,6 +2509,7 @@ class Daemon:
         self.set(status="acting")
         done, failed = [], []
         self.cmd_outputs = []
+        self.tool_say = []              # answers a tool speaks itself (listing reminders)
         self.cmd_wait = 15 if plan.get("report") else 4
         live = {c.get("address") for c in (hypr("clients") or [])}
         for a in actions:
@@ -2224,7 +2524,7 @@ class Daemon:
         if any(a.get("tool") == "media" for a in actions):
             self.paused = []            # the user drove the player themselves
 
-        say = (plan.get("say") or "").strip()
+        say = " ".join(self.tool_say) or (plan.get("say") or "").strip()
         if plan.get("report") and self.cmd_outputs and gen == self.gen:
             self.set(status="thinking")
             say = self.report(heard, self.cmd_outputs) or say
@@ -2368,16 +2668,26 @@ class Daemon:
             return "Next background"
 
         if tool == "reminder":
+            if val == "clear":
+                n = self.reminders.clear()
+                self.tool_say.append("Cleared %d reminder%s." % (n, "" if n == 1 else "s") if n else "You had no reminders.")
+                return "Cleared reminders"
+            if val == "list":
+                items = self.reminders.upcoming()
+                if not items:
+                    self.tool_say.append("You have no reminders.")
+                else:
+                    self.tool_say.append("You have %d reminder%s: %s." % (len(items), "" if len(items) == 1 else "s", "; ".join(
+                        "%s at %s" % (r["text"], datetime.fromtimestamp(r["due"]).strftime("%-I:%M %p")) for r in items[:5])))
+                return "Listed reminders"
             minutes = a.get("minutes")
             try:
                 minutes = max(1, min(24 * 60, int(round(float(minutes)))))
             except (TypeError, ValueError):
                 raise Fail("A reminder needs a time")
-            text = (a.get("text") or "Reminder").strip()[:80]
-            code, _, err = run(["omarchy", "reminder", str(minutes), text])
-            if code != 0:
-                raise Fail("Couldn't set the reminder")
-            return "Reminder in %d min" % minutes
+            text = (a.get("text") or "Reminder").strip()[:120]
+            self.reminders.add(minutes, text)
+            return "Reminder at %s" % datetime.fromtimestamp(time.time() + minutes * 60).strftime("%-I:%M %p")
 
         if tool == "phrase":
             return self.run_phrase(a)
@@ -2429,14 +2739,16 @@ class Daemon:
     # ---- your own phrases
 
     def run_phrase(self, a):
-        import shlex
         ph = next((p for p in self.phrases.items if p["index"] == a.get("index")), None)
         if not ph:
             raise Fail("That phrase isn't in your phrases file anymore")
-        cmd = ph["run"]
+        # Captured words go in through the environment (owner-only in /proc),
+        # not into the bash -c command line, which any local user can read.
+        cmd, env = ph["run"], dict(os.environ)
         for i, cap in enumerate(a.get("args") or [], 1):
-            cmd = cmd.replace("{%d}" % i, shlex.quote(cap))
-        code, out = run_captured(["bash", "-c", cmd], 4)
+            cmd = cmd.replace("{%d}" % i, '"${JARVIS_%d}"' % i)
+            env["JARVIS_%d" % i] = cap
+        code, out = run_captured(["bash", "-c", cmd], 4, env=env)
         if code not in (None, 0):
             raise Fail("Your phrase's command failed%s" % (": " + out.splitlines()[-1][:100] if out else ""))
         return "Ran your phrase \"%s\"" % ph["say"][0]
@@ -3319,6 +3631,7 @@ class Daemon:
     def main(self):
         threading.Thread(target=self.serve_socket, daemon=True).start()
         threading.Thread(target=self.housekeeping, daemon=True).start()
+        threading.Thread(target=self.reminders.run, daemon=True).start()
         self.apps.refresh(force=True)
         self.phrases.load()
         threading.Thread(target=self.watch_hyprland, daemon=True).start()
