@@ -38,10 +38,12 @@ the arc reactor icon to your bar. Then:
    it over from Omarchy's menu. You can always type a request instead.
 3. **Make sure Claude Code or Codex is installed and signed in** (`claude` or
    `codex` on your PATH). Jarvis uses it, with no tools, to plan requests the
-   built-in commands don't cover: Claude Code with the fast Haiku model (about
-   3 s), or Codex with GPT-6-Luna (about 5 s). Pick one under **Cloud model**
-   in the panel; if only one is installed, that one is used. Your subscription or
-   API key works as is.
+   built-in commands don't cover: Claude Code with the fast Haiku model, or
+   Codex with GPT-6-Luna. Pick one under **Cloud model** in the panel; if only
+   one is installed, that one is used. Claude is the default and the most
+   tested: Jarvis was built with it, and it's faster (about 3 s against 5 s).
+   Codex works too, and is handy if that's the subscription you have. Your
+   subscription or API key works as is.
 
 To update or remove it: `omarchy plugin update grivera.jarvis`,
 `omarchy plugin remove grivera.jarvis`. Removing the plugin leaves its data
