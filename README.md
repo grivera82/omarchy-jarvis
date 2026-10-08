@@ -25,19 +25,12 @@ the arc reactor icon to your bar. Then:
    `~/.config/omarchy/plugins/grivera.jarvis/bin/jarvis setup`. It creates a
    Python environment with faster-whisper and Kokoro and downloads the models
    (about 1.5 GB, in `~/.local/share/grivera-jarvis/`). A few minutes, once.
-2. **Bind the Copilot key.** Add this to `~/.config/hypr/bindings.lua`:
-
-   ```lua
-   -- Omarchy binds the Copilot key (code:201 = F23) to its menu; free it first.
-   hl.unbind("SUPER + SHIFT + code:201")
-   local jarvis = os.getenv("HOME") .. "/.config/omarchy/plugins/grivera.jarvis/bin/jarvis"
-   o.bind("SUPER + SHIFT + F23", "Jarvis", jarvis .. " press")
-   o.bind("SUPER + SHIFT + F23", nil, jarvis .. " release", { release = true })
-   ```
-
-   Most laptops' Copilot key sends Super+Shift+F23. No Copilot key? Bind any
-   key you like. You can also right-click the bar icon to talk, or type a
-   request in the panel.
+2. **Pick a shortcut.** The Copilot key works right away: Jarvis binds it in
+   Hyprland itself (no config files touched) and takes it over from Omarchy's
+   menu. No Copilot key? Choose Super+Alt+J, Super+Alt+A or any combination
+   under **Shortcut** in the panel. Jarvis tells you if a combination is
+   already used and by what, and re-applies the binding whenever Hyprland
+   reloads. You can also right-click the bar icon to talk, or type a request.
 3. **Make sure Claude Code is installed and signed in** (`claude` on your PATH).
    Jarvis uses it in print mode with the fast Haiku model to plan requests the
    built-in commands don't cover. Your subscription or API key works as is.
@@ -215,7 +208,21 @@ the on-screen bubble. Everything lives in
 | `themeModel` | `sonnet` | Model that designs themes |
 | `silence` | `1.0` | Seconds of quiet that end a request (self-tunes) |
 | `maxSeconds` | `15` | Longest request |
+| `shortcut` | `copilot` | `copilot`, `off`, or a combination like `SUPER + ALT + J` |
 | `spotifyRedirect` | `http://127.0.0.1:8989/login` | Redirect URI registered in your Spotify app |
+
+## Binding the key yourself
+
+Set **Shortcut** to **Off** and bind the CLI in `~/.config/hypr/bindings.lua`:
+
+```lua
+local jarvis = os.getenv("HOME") .. "/.config/omarchy/plugins/grivera.jarvis/bin/jarvis"
+o.bind("SUPER + ALT + J", "Jarvis", jarvis .. " press")
+o.bind("SUPER + ALT + J", nil, jarvis .. " release", { release = true })
+```
+
+Bind both: the press starts listening, and a release after half a second
+sends the request (hold-to-talk).
 
 ## Command line
 
@@ -237,7 +244,8 @@ The CLI is `~/.config/omarchy/plugins/grivera.jarvis/bin/jarvis`.
 - **It mishears a lot**: if Jarvis warns that your mic is distorting, lower the
   input level (about 45 to 50 percent on many laptops). Correct it ("no, I said
   …") and it learns.
-- **The Copilot key opens the Omarchy menu too**: add the `hl.unbind` line above.
+- **The shortcut does nothing**: check **Shortcut** in the panel; it shows whether
+  the key is bound or which binding is in the way.
 - **Panel changes don't show after an update**: run `omarchy restart shell`.
 
 ## Files

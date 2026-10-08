@@ -86,6 +86,8 @@ DEFAULTS = {
     "followUp": True,         # listen again after the assistant asks a question
     "overlay": True,          # the bubble at the bottom of the screen
     "themeModel": "sonnet",   # Claude model that designs new themes
+    "shortcut": "copilot",    # copilot | off | a Hyprland combo like "SUPER + ALT + J"
+    "shortcutForce": "",      # a combo you chose to take over from another binding
     # A redirect URI registered in your Spotify developer app (Spotifast's own one works).
     "spotifyRedirect": "http://127.0.0.1:8989/login",
 }
@@ -876,6 +878,30 @@ class Phrases:
         return (best[1], []) if best else None
 
 
+# ---------------------------------------------------------------- the shortcut
+
+COPILOT_COMBO = "SUPER + SHIFT + F23"       # what the Copilot key sends on most laptops
+OMARCHY_COPILOT = "SUPER + SHIFT + code:201"  # Omarchy's own binding for it (the menu)
+MODMASK = {"SHIFT": 1, "CAPS": 2, "CTRL": 4, "CONTROL": 4, "ALT": 8, "MOD2": 16, "MOD3": 32,
+           "SUPER": 64, "WIN": 64, "LOGO": 64, "MOD5": 128}
+
+
+def parse_combo(text):
+    """'super+alt+j' -> ('SUPER + ALT + J', modmask, 'J'), or Fail."""
+    parts = [p.strip() for p in str(text or "").split("+") if p.strip()]
+    if not parts:
+        raise Fail("Type a key combination, like SUPER + ALT + J")
+    *mods, key = parts
+    mods = [m.upper() for m in mods]
+    bad = [m for m in mods if m not in MODMASK]
+    if bad:
+        raise Fail("Unknown modifier %s (use SUPER, ALT, CTRL, SHIFT)" % bad[0])
+    if not re.fullmatch(r"[A-Za-z0-9_]{1,24}|code:\d{1,4}", key):
+        raise Fail("Unknown key %s" % key)
+    key = key if key.startswith("code:") else key.upper()
+    return " + ".join(mods + [key]), sum({MODMASK[m] for m in mods}), key
+
+
 # ---------------------------------------------------------------- built-in matcher
 
 NUMBER_WORDS = {"one": 1, "won": 1, "two": 2, "to": 2, "too": 2, "three": 3, "four": 4, "for": 4,
@@ -1543,6 +1569,8 @@ class Daemon:
         self.prev_turn = None
         self.turn_end = ""
         self.notice = ""
+        self.shortcut_state = {"combo": "", "bound": False}
+        self.shortcut_lock = threading.Lock()
         self.cmd_outputs = []
         self.cmd_wait = 4
         self.models = Models()
@@ -1591,6 +1619,7 @@ class Daemon:
             "setup": self.setup_line,
             "claude": bool(find_claude()),
             "missed": self.missed[-10:][::-1],
+            "shortcut": self.shortcut_state,
             "learned": len(self.plans),
             "corrections": len(self.learner.active_aliases),
             "vocab": len(self.learner.vocab),
@@ -1651,7 +1680,16 @@ class Daemon:
                 save_json(CONFIG_FILE, {k: v for k, v in self.cfg.items() if v != DEFAULTS[k]})
             if "instantStart" in changed:
                 self.ensure_mic()
+            if "shortcut" in changed:
+                threading.Thread(target=self.change_shortcut, daemon=True).start()
             self.publish()
+            return {"ok": True}
+        if cmd == "shortcut_force":
+            combo = self.shortcut_state.get("combo")
+            if combo:
+                self.cfg["shortcutForce"] = combo
+                save_json(CONFIG_FILE, {k: v for k, v in self.cfg.items() if v != DEFAULTS[k]})
+                threading.Thread(target=self.bind_shortcut, daemon=True).start()
             return {"ok": True}
         if cmd == "clear_missed":
             self.missed = []
@@ -2415,6 +2453,67 @@ class Daemon:
         return {"like": "Liked the song", "next": "Next song", "previous": "Previous song", "pause": "Paused Spotify",
                 "play": "Playing Spotify", "toggle": "Play/pause"}.get(verb, "Spotify: %s" % verb)
 
+    # ---- the shortcut, bound in Hyprland at runtime (no config files touched)
+
+    def bind_shortcut(self):
+        with self.shortcut_lock:
+            v = str(self.cfg.get("shortcut") or "copilot")
+            if v == "off":
+                self.shortcut_state = {"combo": "", "bound": False, "off": True}
+                self.publish()
+                return
+            try:
+                combo, mm, key = parse_combo(COPILOT_COMBO if v == "copilot" else v)
+            except Fail as e:
+                self.shortcut_state = {"combo": v, "bound": False, "error": str(e)}
+                self.publish()
+                return
+            label = "the Copilot key" if v == "copilot" else combo
+            same = [b for b in (hypr("binds") or []) if b.get("modmask") == mm and str(b.get("key", "")).upper() == key.upper()]
+            ours = any(b.get("description") in ("Jarvis", "Voice control") for b in same)
+            foreign = [b for b in same if b.get("description") not in ("Jarvis", "Voice control")
+                       and not (ours and not b.get("description"))]
+            if foreign and self.cfg.get("shortcutForce") != combo:
+                what = foreign[0].get("description") or "another binding"
+                self.shortcut_state = {"combo": combo, "label": label, "bound": False, "conflict": what}
+                self.publish()
+                return
+            import shlex
+            jarvis = shlex.quote(os.path.join(ROOT, "bin", "jarvis"))
+            q = json.dumps
+            lua = ["hl.unbind(%s)" % q(combo)]
+            if v == "copilot":
+                lua.append("hl.unbind(%s)" % q(OMARCHY_COPILOT))    # Omarchy opens its menu on this key
+            lua += ['hl.bind(%s, hl.dsp.exec_cmd(%s), { description = "Jarvis" })' % (q(combo), q(jarvis + " press")),
+                    "hl.bind(%s, hl.dsp.exec_cmd(%s), { release = true })" % (q(combo), q(jarvis + " release"))]
+            code, out, err = run(["hyprctl", "eval", " ".join(lua)], timeout=5)
+            ok = code == 0 and out.strip().startswith("ok")
+            self.shortcut_state = {"combo": combo, "label": label, "bound": ok,
+                                   "error": "" if ok else "Hyprland refused it: %s" % (out or err).strip()[:100]}
+            self.publish()
+
+    def change_shortcut(self):
+        """Reloading Hyprland's config drops the old runtime binding and
+        restores whatever it had replaced; then the new one goes on."""
+        run(["hyprctl", "reload"], timeout=10)
+        time.sleep(0.6)
+        self.bind_shortcut()
+
+    def watch_hyprland(self):
+        """Re-apply the shortcut whenever Hyprland reloads its config."""
+        path = os.path.join(RUNTIME, "hypr", os.environ.get("HYPRLAND_INSTANCE_SIGNATURE", ""), ".socket2.sock")
+        while True:
+            try:
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                s.connect(path)
+                for line in s.makefile("r", errors="replace"):
+                    if line.startswith("configreloaded"):
+                        time.sleep(0.3)
+                        self.bind_shortcut()
+            except OSError:
+                pass
+            time.sleep(5)
+
     # ---- Omarchy's own commands
 
     def run_omarchy(self, a):
@@ -3046,6 +3145,8 @@ class Daemon:
         threading.Thread(target=self.housekeeping, daemon=True).start()
         self.apps.refresh(force=True)
         self.phrases.load()
+        threading.Thread(target=self.watch_hyprland, daemon=True).start()
+        threading.Thread(target=self.bind_shortcut, daemon=True).start()
         self.ensure_mic()
         self.publish()
         for line in sys.stdin:

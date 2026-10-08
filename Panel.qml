@@ -378,6 +378,87 @@ Panel {
             spacing: Style.space(8)
 
             PanelSeparator { foreground: root.fg }
+            PanelSectionHeader { text: "SHORTCUT"; foreground: root.fg; fontFamily: root.fontFamily }
+
+            Column {
+              id: shortcutBox
+              readonly property var sc: root.st.shortcut || ({})
+              readonly property string current: root.config.shortcut || "copilot"
+              readonly property var presets: ["copilot", "SUPER + ALT + J", "SUPER + ALT + A", "off"]
+              property bool customOpen: false
+              width: parent.width
+              spacing: Style.space(6)
+
+              ButtonGroup {
+                options: [
+                  { value: "copilot", label: "Copilot", tooltip: "The Copilot key (Super+Shift+F23 on most laptops)" },
+                  { value: "SUPER + ALT + J", label: "Super+Alt+J" },
+                  { value: "SUPER + ALT + A", label: "Super+Alt+A" },
+                  { value: "custom", label: "Custom" },
+                  { value: "off", label: "Off", tooltip: "Bind jarvis press/release yourself in bindings.lua" }
+                ]
+                value: shortcutBox.customOpen || shortcutBox.presets.indexOf(shortcutBox.current) < 0 ? "custom" : shortcutBox.current
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                focusable: false
+                onChanged: function(v) {
+                  shortcutBox.customOpen = v === "custom"
+                  if (v !== "custom" && root.svc) root.svc.setConfig("shortcut", v)
+                }
+              }
+
+              Row {
+                visible: shortcutBox.customOpen || shortcutBox.presets.indexOf(shortcutBox.current) < 0
+                width: parent.width
+                spacing: Style.space(8)
+
+                TextField {
+                  id: comboField
+                  width: parent.width - setCombo.width - parent.spacing
+                  placeholderText: "e.g. SUPER + CTRL + J"
+                  text: shortcutBox.presets.indexOf(shortcutBox.current) < 0 ? shortcutBox.current : ""
+                  foreground: root.fg
+                  font.family: root.fontFamily
+                  onAccepted: setCombo.clicked()
+                }
+                Button {
+                  id: setCombo
+                  anchors.verticalCenter: comboField.verticalCenter
+                  text: "Set"
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  bordered: true
+                  onClicked: if (root.svc && comboField.text.trim()) root.svc.setConfig("shortcut", comboField.text.trim())
+                }
+              }
+
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                readonly property var sc: shortcutBox.sc
+                text: sc.off ? "No shortcut. Bind jarvis press and jarvis release yourself, or right-click the bar icon to talk."
+                  : sc.bound ? "Tap " + (sc.label || sc.combo) + " and speak, or hold it while you talk."
+                  : sc.conflict ? (sc.label || sc.combo) + " is already used for \u201c" + sc.conflict + "\u201d. Jarvis has no shortcut until you pick another or take it over."
+                  : sc.error ? sc.error : "Setting it up\u2026"
+                color: sc.conflict || sc.error ? root.urgent : root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+
+              Button {
+                visible: !!shortcutBox.sc.conflict
+                text: "Use it for Jarvis anyway"
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                bordered: true
+                onClicked: if (root.svc) root.svc.send("shortcut_force")
+              }
+            }
+
             PanelSectionHeader { text: "SPOKEN REPLIES"; foreground: root.fg; fontFamily: root.fontFamily }
 
             ButtonGroup {
@@ -582,7 +663,7 @@ Panel {
               width: parent.width
               topPadding: Style.space(4)
               textFormat: Text.PlainText
-              text: "Tap the Copilot key and speak, or hold it while you talk. Simple commands run instantly; anything else goes to Claude ("
+              text: "Simple commands run instantly; anything else goes to Claude ("
                 + (root.config.claudeModel || "haiku") + ") through your Claude Code login."
                 + (root.st.claude === false ? " Claude Code isn't installed, so only the built-in commands work." : "")
               color: root.dim
