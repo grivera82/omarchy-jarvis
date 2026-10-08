@@ -1,7 +1,7 @@
 # Jarvis (grivera.jarvis)
 
-**A voice assistant for Omarchy.** Press the Copilot key, say what you want, and
-Jarvis does it: open and arrange apps, switch workspaces, play music, change
+**A voice assistant for Omarchy.** Press the Copilot key (or any shortcut you
+pick), say what you want, and Jarvis does it: open and arrange apps, switch workspaces, play music, change
 settings, answer questions, and even design you a new theme.
 
 Speech recognition and Jarvis's voice run locally on your laptop. Simple
@@ -28,12 +28,14 @@ the arc reactor icon to your bar. Then:
    (about 1.5 GB, in `~/.local/share/grivera-jarvis/`). A few minutes, once.
    The Python packages are the exact tested versions in `lib/requirements.txt`,
    and every model file is checked against a SHA-256 before it's used.
-2. **Pick a shortcut.** The Copilot key works right away: Jarvis binds it in
-   Hyprland itself (no config files touched) and takes it over from Omarchy's
-   menu. No Copilot key? Choose Super+Alt+J, Super+Alt+A or any combination
-   under **Shortcut** in the panel. Jarvis tells you if a combination is
-   already used and by what, and re-applies the binding whenever Hyprland
-   reloads. You can also right-click the bar icon to talk, or type a request.
+2. **Pick a shortcut.** After setup the panel asks which key should start
+   Jarvis: the Copilot key, Super+Alt+J, Super+Alt+A, or no key at all
+   (right-click the bar icon or press **Talk** instead). Any other combination
+   can be set under **Shortcut**, and the panel always shows the key in use.
+   Jarvis binds it in Hyprland itself (no config files touched), tells you if
+   a combination is already used and by what, and re-applies the binding
+   whenever Hyprland reloads. Until you choose, the Copilot key works, taking
+   it over from Omarchy's menu. You can always type a request instead.
 3. **Make sure Claude Code or Codex is installed and signed in** (`claude` or
    `codex` on your PATH). Jarvis uses it, with no tools, to plan requests the
    built-in commands don't cover: Claude Code with the fast Haiku model (about
@@ -42,12 +44,17 @@ the arc reactor icon to your bar. Then:
    API key works as is.
 
 To update or remove it: `omarchy plugin update grivera.jarvis`,
-`omarchy plugin remove grivera.jarvis`.
+`omarchy plugin remove grivera.jarvis`. Removing the plugin leaves its data
+behind; to delete that too (about 1.5 GB, mostly models):
+
+```
+rm -rf ~/.local/share/grivera-jarvis ~/.local/state/grivera-jarvis ~/.config/grivera-jarvis
+```
 
 ## What it can do
 
 **Talk to your desktop**
-- Tap the Copilot key and speak; Jarvis stops when you stop. Or hold the key
+- Tap your shortcut and speak; Jarvis stops when you stop. Or hold the key
   while you talk and let go to send. Press it again to interrupt.
 - Say "Hey Jarvis, …" if you like: the name is understood and ignored.
 - A bubble at the bottom of the screen shows what it heard, that it's
@@ -61,7 +68,7 @@ To update or remove it: `omarchy plugin update grivera.jarvis`,
 
 **All of Omarchy**
 - Jarvis reads Omarchy's own command catalog (`omarchy commands --json`), so it
-  can run 135 of its commands: screen recording, screenshots and OCR, Bluetooth,
+  can run over a hundred of its commands: screen recording, screenshots and OCR, Bluetooth,
   night light, do not disturb, power profiles, fonts, themes and backgrounds,
   menus and switchers, keyboard backlight, brightness, audio outputs,
   reminders, webapps, network status and speed tests, and more.
@@ -86,13 +93,13 @@ To update or remove it: `omarchy plugin update grivera.jarvis`,
 **Make things**
 - "Make me a new background of a misty pine forest at dawn": Codex paints a
   wallpaper, saves it with your theme's backgrounds and sets it.
-- "Make me a theme inspired by a rainy night in Tokyo": Claude (or Codex,
-  if it's your planner) designs a full
-  Omarchy theme (palette, icons, bar and menu colors) and Codex paints a
-  matching wallpaper. It's saved to `~/.config/omarchy/themes/` and applied,
+- "Make me a theme inspired by a rainy night in Tokyo": Claude (or Codex, if
+  it's your cloud model) designs a full Omarchy theme (palette, icons, bar and
+  menu colors) and Codex paints a matching wallpaper. It's saved to `~/.config/omarchy/themes/` and applied,
   about a minute later.
-- "Change the keyboard to sunset orange" on laptops with RGB keyboards (needs
-  the `asus-kbd-rgb` tool; see Requirements).
+- "Change the keyboard to sunset orange" on ASUS laptops with RGB keyboards.
+  This needs the `asus-kbd-rgb` tool, which isn't public yet; without it the
+  request is simply declined.
 
 **Your own commands**
 - Add phrases in `~/.config/grivera-jarvis/phrases.toml` (panel: Edit phrases):
@@ -111,7 +118,7 @@ To update or remove it: `omarchy plugin update grivera.jarvis`,
   Your phrases are checked before anything else and reload when you save.
 
 **It gets better as you use it**
-- **Learned requests**: when Claude handles something successfully, Jarvis
+- **Learned requests**: when Claude or Codex handles something successfully, Jarvis
   remembers the plan, so the next time you say it, it runs instantly.
 - **Corrections**: "no, I said Chromium" right after a mishearing fixes the
   request and teaches Jarvis that "card running" means Chromium from then on.
@@ -143,28 +150,30 @@ To update or remove it: `omarchy plugin update grivera.jarvis`,
 ## How it works
 
 ```
-Copilot key ─► jarvis press ─► daemon: microphone (PipeWire) + Silero VAD
+your shortcut ─► jarvis press ─► daemon: microphone (PipeWire) + Silero VAD
                                    │
                        faster-whisper, on your laptop (~0.7 s)
                                    │
    your phrases ─► built-in matcher ─► learned requests ─► Claude (claude -p, Haiku)
      (instant)       (instant)           (instant)          or Codex (codex exec, Luna)
-                                                            plans with tools only, 3-5 s
+                                                            returns a plan, no tools, 3-5 s
                                    │
        actions, each checked: real window addresses, installed apps,
        http(s) URLs, Omarchy commands by safety tier
                                    │
-      a chime, or a spoken reply in Kokoro's "George" voice (local), + the bubble
+      a chime, or a spoken reply in a Kokoro voice (local), + the bubble
 ```
 
 Requests take about 1 second when handled locally, 2 to 4 seconds when
-Claude plans them and 4 to 6 seconds with Codex.
+Claude plans them and 4 to 6 seconds with Codex. Speech recognition runs on
+the CPU; these times are from a Ryzen AI 7 350 laptop, so older machines will
+be slower (the **Fast** recognition setting helps).
 
 ## Safety
 
 Neither Claude nor Codex runs anything itself (Codex runs with its shell and
-other agent tools turned off). It returns a plan made of named actions,
-and Jarvis checks each one before running it, without a shell:
+other agent tools turned off). Each only returns a plan made of named actions,
+and Jarvis checks every action before running it, without a shell:
 
 - **Allowed**: window and app control, media, toggles, capture, menus,
   brightness, audio, theme and fonts, status questions.
@@ -181,8 +190,13 @@ Only your own phrases run shell commands, and they're yours to write.
 
 - Your voice is recognized on your laptop and never uploaded. Jarvis's voice
   is generated locally too.
-- When a request goes to Claude or Codex, the text of what you said, your open window
-  titles and installed app names are sent along so it can plan.
+- When a request goes to Claude or Codex, the text of what you said, your open
+  window titles and installed app names are sent along so it can plan. For
+  questions like "how much battery do I have?", the output of the commands
+  that answer it is sent too, so the answer can be phrased. This goes to
+  Anthropic or OpenAI under your own account, through the `claude` or `codex`
+  CLI, and their usual terms apply. Requests handled locally never leave your
+  laptop.
 - **Instant start** (off by default; turn it on in the panel) keeps the
   microphone open with only the last second held in memory, so a word said
   as you press the key isn't lost. Nothing is saved or transcribed until you
@@ -194,7 +208,8 @@ Only your own phrases run shell commands, and they're yours to write.
 
 ## Requirements
 
-- Omarchy 4 (Hyprland 0.56 with the Lua config), PipeWire, Python 3.
+- Omarchy 4 (Hyprland 0.56 with the Lua config), PipeWire, and Omarchy's
+  Python 3.14 on x86_64 (setup installs exact package versions built for it).
 - [Claude Code](https://claude.com/claude-code) or the
   [Codex CLI](https://github.com/openai/codex) for planning, signed in.
 - Optional:
@@ -207,7 +222,7 @@ Only your own phrases run shell commands, and they're yours to write.
     then click **Connect Spotify** in the panel once.
   - cliamp, for internet radio.
   - `asus-kbd-rgb` on your PATH for keyboard colors (ASUS Vivobook-style HID
-    LampArray keyboards).
+    LampArray keyboards). It isn't published yet.
 
 ## Settings
 
@@ -264,6 +279,16 @@ The CLI is `~/.config/omarchy/plugins/grivera.jarvis/bin/jarvis`.
   …") and it learns.
 - **The shortcut does nothing**: check **Shortcut** in the panel; it shows whether
   the key is bound or which binding is in the way.
+- **Setup fails while installing packages**: usually a newer system Python
+  than the pinned packages support (after an Arch update). Delete
+  `~/.local/share/grivera-jarvis/venv`, update the plugin and run setup again;
+  if it still fails, open an issue with the Python version.
+- **"I can't find Claude Code or Codex"**: Jarvis looks on your PATH and in
+  the usual install folders (`~/.local/bin`, mise). Run `which claude` or
+  `which codex` in a terminal, and sign in once with `claude` or `codex`.
+- **Codex says a model isn't available**: your plan may not include the
+  default models. Set `codexModel` (and `codexThemeModel`) in `config.json`
+  to one listed by Codex's `/model` command.
 - **Panel changes don't show after an update**: run `omarchy restart shell`.
 
 ## Files

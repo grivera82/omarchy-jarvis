@@ -104,6 +104,7 @@ DEFAULTS = {
     "codexThemeModel": "gpt-6.1-sol",
     "shortcut": "copilot",    # copilot | off | a Hyprland combo like "SUPER + ALT + J"
     "shortcutForce": "",      # a combo you chose to take over from another binding
+    "shortcutChosen": False,  # the panel asks which key to use until this is set
     # A redirect URI registered in your Spotify developer app (Spotifast's own one works).
     "spotifyRedirect": "http://127.0.0.1:8989/login",
 }
@@ -976,6 +977,12 @@ def parse_combo(text):
     return " + ".join(mods + [key]), sum({MODMASK[m] for m in mods}), key
 
 
+def combo_label(combo):
+    """'SUPER + ALT + J' -> 'Super+Alt+J'."""
+    return "+".join(p if len(p) == 1 or p.startswith("code:") else p.capitalize()
+                    for p in combo.split(" + "))
+
+
 # ---------------------------------------------------------------- built-in matcher
 
 NUMBER_WORDS = {"one": 1, "won": 1, "two": 2, "to": 2, "too": 2, "three": 3, "four": 4, "for": 4,
@@ -1636,6 +1643,10 @@ class Daemon:
         self.lock = threading.RLock()
         self.cfg = dict(DEFAULTS, **load_json(CONFIG_FILE, {}))
         self.history = load_json(HISTORY_FILE, [])
+        if not self.cfg["shortcutChosen"] and (self.history or "shortcut" in load_json(CONFIG_FILE, {})):
+            # Already in use before the first-run question existed: don't ask.
+            self.cfg["shortcutChosen"] = True
+            save_json(CONFIG_FILE, {k: v for k, v in self.cfg.items() if v != DEFAULTS[k]})
         self.apps = Apps()
         self.catalog = Catalog()
         self.spotify_api = SpotifyAPI()
@@ -1754,6 +1765,8 @@ class Daemon:
             return {"ok": True}
         if cmd == "config":
             changed = {k: v for k, v in msg.items() if k in DEFAULTS}
+            if "shortcut" in changed:
+                changed["shortcutChosen"] = True
             with self.lock:
                 self.cfg.update(changed)
                 save_json(CONFIG_FILE, {k: v for k, v in self.cfg.items() if v != DEFAULTS[k]})
@@ -2501,7 +2514,7 @@ class Daemon:
                 self.shortcut_state = {"combo": v, "bound": False, "error": str(e)}
                 self.publish()
                 return
-            label = "the Copilot key" if v == "copilot" else combo
+            label = "the Copilot key" if v == "copilot" else combo_label(combo)
             same = [b for b in (hypr("binds") or []) if b.get("modmask") == mm and str(b.get("key", "")).upper() == key.upper()]
             ours = any(b.get("description") in ("Jarvis", "Voice control") for b in same)
             foreign = [b for b in same if b.get("description") not in ("Jarvis", "Voice control")

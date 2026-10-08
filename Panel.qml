@@ -50,8 +50,26 @@ Panel {
     if (!svc) return "SERVICE NOT LOADED"
     if (svc.lastError) return svc.lastError.toUpperCase()
     if (needsSetup && status !== "setup") return "SETUP NEEDED"
-    if (status === "idle") return "READY · PRESS THE COPILOT KEY"
+    if (status === "idle") {
+      var sc = st.shortcut || {}
+      if (sc.bound) return "READY · PRESS " + (sc.label || sc.combo).toUpperCase()
+      if (sc.off) return "READY · RIGHT-CLICK THE ICON TO TALK"
+      if (sc.conflict || sc.error) return "READY · NO SHORTCUT SET"
+      return "READY"
+    }
     return label(status).toUpperCase()
+  }
+
+  // The shortcut as it's actually bound right now, or "" when there's none.
+  function shortcutName() {
+    var sc = st.shortcut || {}
+    return sc.bound ? (sc.label || sc.combo) : ""
+  }
+
+  function chooseShortcut(v) {
+    if (!svc) return
+    if (v === (config.shortcut || "copilot")) svc.setConfig("shortcutChosen", true)
+    else svc.setConfig("shortcut", v)    // the daemon marks it chosen too
   }
 
   function clock(t) { return Qt.formatTime(new Date(t * 1000), "h:mm ap") }
@@ -163,7 +181,8 @@ Panel {
             TextField {
               id: input
               width: parent.width - talkButton.width - parent.spacing
-              placeholderText: "Type a request, or press the Copilot key"
+              placeholderText: root.shortcutName() ? "Type a request, or press " + root.shortcutName()
+                                                   : "Type a request, or press Talk"
               foreground: root.fg
               font.family: root.fontFamily
               onAccepted: {
@@ -186,6 +205,59 @@ Panel {
                 if (!root.svc) return
                 if (root.busy && root.status !== "listening") root.svc.cancel()
                 else root.talk()
+              }
+            }
+          }
+
+          // ---------- first run: which key starts Jarvis ----------
+          Column {
+            visible: !!root.svc && !root.needsSetup && ["starting", "stopped", "setup"].indexOf(root.status) < 0
+                     && !!root.st.shortcut && root.config.shortcutChosen !== true
+            width: parent.width
+            spacing: Style.space(8)
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: "Which key should start Jarvis?"
+              color: root.fg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: "Use the Copilot key if your keyboard has one (on most new laptops it's next to the right Alt). "
+                + "You can change it any time under Shortcut below, including to a combination of your own."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Flow {
+              width: parent.width
+              spacing: Style.space(8)
+
+              Repeater {
+                model: [
+                  { value: "copilot", label: "Copilot key", tip: "Super+Shift+F23, which the Copilot key sends" },
+                  { value: "SUPER + ALT + J", label: "Super+Alt+J", tip: "" },
+                  { value: "SUPER + ALT + A", label: "Super+Alt+A", tip: "" },
+                  { value: "off", label: "No key", tip: "Right-click the bar icon or press Talk instead" }
+                ]
+                delegate: Button {
+                  required property var modelData
+                  text: modelData.label
+                  tooltipText: modelData.tip
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  bordered: true
+                  onClicked: root.chooseShortcut(modelData.value)
+                }
               }
             }
           }
