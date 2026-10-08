@@ -43,6 +43,8 @@ Each action is an object with a `tool` and the fields that tool needs:
 
 - `omarchy` {command, args}: run one of Omarchy's own commands from the "Omarchy commands" list at the end. `command` is the route exactly as listed ("omarchy toggle nightlight"), `args` the arguments as a list of strings (["region"], ["+10%"]). It covers far more than the tools above: screen recording, Bluetooth, power profiles, fonts, webapps, menus and switchers, keyboard backlight, Wi-Fi status and speed tests, weather, battery, versions, and more. Prefer the specific tools above when one fits; use this for everything else.
 
+- `ask_plugin` {value}: ask an installed plugin for its live status, to answer a question about what it tracks. `value` is a plugin id from the "Plugins you can ask" list (for example GitHub stats, football matches, rocket launches, the radio, coding agents). Prefer it over web searches when a listed plugin covers the subject, and over Omarchy commands for what's playing ("media"). The status is turned into a spoken answer, so leave `say` empty.
+
 Set `report` to true when the user asked a question whose answer comes from a command's output ("how much battery do I have?", "what's the weather?", "how fast is my internet?"). Run the command(s) that answer it and leave `say` empty: the output is turned into a spoken answer afterwards.
 
 ## Rules

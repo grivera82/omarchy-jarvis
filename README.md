@@ -62,6 +62,16 @@ rm -rf ~/.local/share/grivera-jarvis ~/.local/state/grivera-jarvis ~/.config/gri
 - A bubble at the bottom of the screen shows what it heard, that it's
   thinking, and what it did. Music pauses while you speak and resumes after.
 
+**Ask your plugins**
+- Jarvis finds every installed plugin that answers `status()` over the shell
+  (`omarchy-shell <plugin> status`) and uses it to answer questions:
+  "what's my GitHub streak?", "when does Arsenal play next and where can I
+  watch it?", "when's the next SpaceX launch?", "is any agent waiting on me?".
+  Omarchy's media, night light, idle and Tailscale status work too.
+- It only ever calls `status`, so a question can't change anything. Plugin
+  authors can join in by adding a `status(): string` function to their
+  panel's IpcHandler (see Omarchy's Tailscale panel).
+
 **Apps, windows and workspaces**
 - "Open Firefox on workspace 2", "close this window", "move this to workspace 3
   and make it full screen", "switch to Chromium", "float it".
@@ -181,7 +191,8 @@ other agent tools turned off). Each only returns a plan made of named actions,
 and Jarvis checks every action before running it, without a shell:
 
 - **Allowed**: window and app control, media, toggles, capture, menus,
-  brightness, audio, theme and fonts, status questions.
+  brightness, audio, theme and fonts, status questions, and reading a
+  plugin's `status()` (never any of its other functions).
 - **Asks first** (you say "yes"): shutting down ("shut down the computer"),
   restarts, default apps, DNS, display scaling, turning off the laptop screen,
   closing three or more windows, webapps.
@@ -198,7 +209,7 @@ Only your own phrases run shell commands, and they're yours to write.
 - When a request goes to Claude or Codex, the text of what you said, your open
   window titles and installed app names are sent along so it can plan. For
   questions like "how much battery do I have?", the output of the commands
-  that answer it is sent too, so the answer can be phrased. This goes to
+  (or the plugin status) that answers it is sent too, so the answer can be phrased. This goes to
   Anthropic or OpenAI under your own account, through the `claude` or `codex`
   CLI, and their usual terms apply. Requests handled locally never leave your
   laptop.
