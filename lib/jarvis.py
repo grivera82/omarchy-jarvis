@@ -573,7 +573,7 @@ def mpris_call(name, method):
 
 # ---------------------------------------------------------------- Omarchy's command catalog
 
-# First matching prefix wins. Anything not listed, and anything that needs sudo,
+# First matching prefix wins. Anything not listed, and anything that needs root,
 # is blocked. "confirm" commands wait for a spoken yes.
 OMARCHY_RULES = [
     ("omarchy launch floating terminal", "block"), ("omarchy launch or focus", "block"),

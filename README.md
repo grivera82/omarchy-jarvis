@@ -182,7 +182,7 @@ and Jarvis checks every action before running it, without a shell:
 - **Asks first** (you say "yes"): shutting down ("shut down the computer"),
   restarts, default apps, DNS, display scaling, turning off the laptop screen,
   closing three or more windows, webapps.
-- **Blocked, and not even shown to the model**: anything needing sudo, installing
+- **Blocked, and not even shown to the model**: anything needing root rights, installing
   or removing software, updates, refresh/reinstall, reboot and logout, and
   arbitrary shell commands.
 
