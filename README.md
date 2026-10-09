@@ -200,6 +200,11 @@ and Jarvis checks every action before running it, without a shell:
   or removing software, updates, refresh/reinstall, reboot and logout, and
   arbitrary shell commands.
 
+Arguments are checked as well. Nothing that looks like an option gets through
+except a few harmless flags the command itself lists (such as `--no-osd`), file
+paths are made absolute so they can only be opened as files, and the browser and
+webapps only get http(s) addresses.
+
 Only your own phrases run shell commands, and they're yours to write.
 
 ## Privacy

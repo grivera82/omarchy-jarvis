@@ -32,6 +32,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from datetime import datetime
 from difflib import SequenceMatcher
 
@@ -602,6 +603,7 @@ OMARCHY_RULES = [
     ("omarchy osd", "block"),
     ("omarchy powerprofiles list", "allow"), ("omarchy powerprofiles set", "allow"),
     ("omarchy reminder", "block"),
+    ("omarchy restart app", "block"),           # starts any program it's given
     ("omarchy restart", "confirm"),
     ("omarchy screensaver", "block"),             # a TUI; "omarchy launch screensaver" opens it in a terminal
     ("omarchy share", "allow"),
@@ -629,6 +631,64 @@ def omarchy_tier(route):
         if route == prefix or route.startswith(prefix + " "):
             return tier
     return "block"
+
+
+# An argument that looks like an option can change what a command does
+# ("omarchy launch editor -c!cmd" has Neovim run a shell command), so the only
+# ones let through are these value-less flags, on routes that list them, and
+# volume/brightness steps such as -5 or +10%.
+SAFE_FLAGS = {"--no-osd", "--fullscreen", "--with-desktop-audio", "--with-microphone-audio",
+              "--with-webcam", "--stop-recording", "--json", "--verbose", "--status",
+              "--active-state", "--shell", "--bar-widget", "--with-mangohud", "--yes"}
+STEP_ARG = re.compile(r"[+-]?\d{1,3}%?-?")
+# Routes whose arguments are files or web addresses; they're checked and rewritten.
+PATH_ARGS = {"omarchy launch editor", "omarchy launch config editor", "omarchy theme bg set"}
+URL_ARGS = {"omarchy launch browser", "omarchy launch webapp"}
+
+
+def omarchy_args(c, args):
+    """The planned arguments for catalog entry c, made safe to pass, or Fail."""
+    route, spec = c["route"], str(c.get("args") or "")
+
+    def bad():
+        return Fail("Those arguments don't look right")
+
+    def path(x):
+        if x[:1] in ("-", "+"):
+            raise bad()
+        # Made absolute, so the program can only read it as a file.
+        return os.path.normpath(os.path.join(HOME, os.path.expanduser(x)))
+
+    def url(x):
+        u = urllib.parse.urlsplit(x)
+        if u.scheme not in ("http", "https") or not u.netloc or re.search(r"\s", x):
+            raise bad()
+        return x
+
+    if args and not spec:
+        raise Fail("%s doesn't take arguments" % route)
+    if route in PATH_ARGS:
+        if len(args) != 1:
+            raise bad()
+        return [path(args[0])]
+    if route in URL_ARGS:
+        if len(args) > 1 or (route == "omarchy launch webapp" and not args):
+            raise bad()
+        return [url(x) for x in args]
+    if route == "omarchy share":
+        if not args or args[0] not in ("clipboard", "file", "folder"):
+            raise bad()
+        return args[:1] + [path(x) for x in args[1:]]
+    if route == "omarchy webapp install":
+        # name, url and icon only: the optional fourth argument is a command to run.
+        if len(args) != 3:
+            raise bad()
+        args = [args[0], url(args[1]), args[2]]
+    for x in args:
+        if x[:1] in ("-", "+") and not STEP_ARG.fullmatch(x) and not (
+                x in SAFE_FLAGS and re.search(r"(?<![\w-])%s(?![\w=-])" % re.escape(x), spec)):
+            raise bad()
+    return args
 
 
 class Catalog:
@@ -693,6 +753,7 @@ class Catalog:
             raise Fail("Those arguments don't look right")
         if c["tier"] == "noargs" and args:
             raise Fail("I can only open a plain terminal")
+        args = omarchy_args(c, args)
         return c, ["omarchy"] + route.split()[1:] + args
 
 
