@@ -644,6 +644,10 @@ STEP_ARG = re.compile(r"[+-]?\d{1,3}%?-?")
 # Routes whose arguments are files or web addresses; they're checked and rewritten.
 PATH_ARGS = {"omarchy launch editor", "omarchy launch config editor", "omarchy theme bg set"}
 URL_ARGS = {"omarchy launch browser", "omarchy launch webapp"}
+# `omarchy toggle <flag> [toggle|on|off]` touches or deletes the flag file
+# ~/.local/state/omarchy/toggles/<flag>, so the name must stay a plain name.
+TOGGLE_FLAG = re.compile(r"[a-z0-9][a-z0-9-]{0,40}")
+TOGGLE_ACTIONS = {"toggle", "on", "off"}
 
 
 def omarchy_args(c, args):
@@ -683,8 +687,17 @@ def omarchy_args(c, args):
         # name, url and icon only: the optional fourth argument is a command to run.
         if len(args) != 3:
             raise bad()
-        args = [args[0], url(args[1]), args[2]]
-    for x in args:
+        icon = args[2] if "/" not in args[2] else url(args[2])
+        args = [args[0], url(args[1]), icon]
+    if route in ("omarchy toggle", "omarchy toggle enabled"):
+        if not args or not TOGGLE_FLAG.fullmatch(args[0]) or len(args) > (2 if route == "omarchy toggle" else 1) \
+                or (len(args) == 2 and args[1] not in TOGGLE_ACTIONS):
+            raise bad()
+    for i, x in enumerate(args):
+        # Names, ids and choices: a slash or "..", here, could only be an
+        # attempt to reach a file outside where the command keeps its own.
+        if (("/" in x and not (route == "omarchy webapp install" and i)) or x in (".", "..")):
+            raise bad()
         if x[:1] in ("-", "+") and not STEP_ARG.fullmatch(x) and not (
                 x in SAFE_FLAGS and re.search(r"(?<![\w-])%s(?![\w=-])" % re.escape(x), spec)):
             raise bad()
@@ -713,6 +726,8 @@ class Catalog:
             route = c.get("route") or ""
             if c.get("hidden") or c.get("requires_sudo") or not route:
                 continue
+            if not re.fullmatch(r"omarchy(-[a-z0-9]+)+", str(c.get("binary") or "")):
+                continue
             tier = omarchy_tier(route)
             if tier != "block":
                 items[route] = dict(c, tier=tier)
@@ -732,7 +747,12 @@ class Catalog:
         return "\n".join(lines) + "\n"
 
     def check(self, route, args):
-        """The command to run for a planned route + args, or Fail."""
+        """The command to run for a planned route + args, or Fail.
+
+        It runs the route's own script, not the `omarchy` dispatcher: the
+        dispatcher picks the longest script name the words spell out, so
+        arguments could turn `omarchy toggle` into `omarchy toggle hybrid gpu`
+        (which needs root) or any other command."""
         words = str(route or "").split()
         if words[:1] != ["omarchy"]:
             words = ["omarchy"] + words
@@ -754,7 +774,11 @@ class Catalog:
         if c["tier"] == "noargs" and args:
             raise Fail("I can only open a plain terminal")
         args = omarchy_args(c, args)
-        return c, ["omarchy"] + route.split()[1:] + args
+        omarchy = shutil.which("omarchy")
+        binary = os.path.join(os.path.dirname(omarchy), c["binary"]) if omarchy else ""
+        if not binary or not os.access(binary, os.X_OK):
+            raise Fail("I couldn't find %s" % route)
+        return c, [binary] + args
 
 
 # ---------------------------------------------------------------- plugin status
@@ -3075,9 +3099,9 @@ class Daemon:
     def run_omarchy(self, a):
         c, argv = self.catalog.check(a.get("command"), a.get("args"))
         if c["route"] in ("omarchy plugin enable", "omarchy plugin disable"):
-            self.check_plugin_toggle(c["route"], argv[3] if len(argv) > 3 else "")
+            self.check_plugin_toggle(c["route"], argv[1] if len(argv) > 1 else "")
             self._plugins = (0, [])
-        label = " ".join(argv[1:])
+        label = " ".join(c["route"].split()[1:] + argv[1:])
         # When the output answers a question, stop the command once it's had
         # its time (speed tests and other live measurements never exit).
         code, out = run_captured(argv, self.cmd_wait, stop_after=self.cmd_wait > 4)

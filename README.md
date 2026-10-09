@@ -202,8 +202,10 @@ and Jarvis checks every action before running it, without a shell:
 
 Arguments are checked as well. Nothing that looks like an option gets through
 except a few harmless flags the command itself lists (such as `--no-osd`), file
-paths are made absolute so they can only be opened as files, and the browser and
-webapps only get http(s) addresses.
+paths are made absolute so they can only be opened as files, the browser and
+webapps only get http(s) addresses, and names (themes, plugins, toggles) can't
+contain `/` or `..`. Jarvis runs the command's own Omarchy script rather than
+`omarchy` itself, so extra words can't turn one command into another.
 
 Only your own phrases run shell commands, and they're yours to write.
 
