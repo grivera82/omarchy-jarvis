@@ -26,6 +26,25 @@ Panel {
 
   readonly property string glyph: String.fromCodePoint(0xF05DD)
 
+  // Typed-only text field. Qt reads a clipboard offer in full before any
+  // validation runs, and the clipboard belongs to whatever app set it, so
+  // every paste path is closed: Ctrl+V / Shift+Insert, middle-click
+  // (primary selection) and the right-click menu.
+  component TypedField: TextField {
+    maximumLength: 500
+    ContextMenu.menu: null
+    Keys.onPressed: event => {
+      if (event.matches(StandardKey.Paste)
+          || (event.key === Qt.Key_Insert && (event.modifiers & Qt.ShiftModifier)))
+        event.accepted = true
+    }
+    MouseArea {
+      anchors.fill: parent
+      z: 1
+      acceptedButtons: Qt.MiddleButton | Qt.RightButton
+    }
+  }
+
   property real pulse: 1
   SequentialAnimation on pulse {
     running: root.busy
@@ -178,7 +197,7 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
 
-            TextField {
+            TypedField {
               id: input
               width: parent.width - talkButton.width - parent.spacing
               placeholderText: root.shortcutName() ? "Type a request, or press " + root.shortcutName()
@@ -485,7 +504,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(8)
 
-                TextField {
+                TypedField {
                   id: comboField
                   width: parent.width - setCombo.width - parent.spacing
                   placeholderText: "e.g. SUPER + CTRL + J"
