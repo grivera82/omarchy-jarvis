@@ -648,6 +648,16 @@ URL_ARGS = {"omarchy launch browser", "omarchy launch webapp"}
 # ~/.local/state/omarchy/toggles/<flag>, so the name must stay a plain name.
 TOGGLE_FLAG = re.compile(r"[a-z0-9][a-z0-9-]{0,40}")
 TOGGLE_ACTIONS = {"toggle", "on", "off"}
+# Routes whose script writes its arguments unquoted into Lua it evaluates
+# (`omarchy hyprland window pop` builds `hl.dsp.window.resize({ x = $1 ... })`):
+# whole numbers only, in one of the allowed counts. Sizes must be positive.
+NUMERIC_ARGS = {"omarchy hyprland window pop": ((0, 2, 4), 2)}
+INT_ARG = re.compile(r"-?\d{1,5}")
+# Characters that only matter to code: quotes, calls, tables, substitutions,
+# separators. No name, choice or number Jarvis passes needs them, and without
+# them an argument can't break out of a Lua, shell or sed snippet a script
+# builds from it. URLs and paths are checked on their own.
+CODE_CHARS = re.compile(r"""["'`$\\;|&<>(){}\[\]]""")
 
 
 def omarchy_args(c, args):
@@ -689,6 +699,12 @@ def omarchy_args(c, args):
             raise bad()
         icon = args[2] if "/" not in args[2] else url(args[2])
         args = [args[0], url(args[1]), icon]
+    if route in NUMERIC_ARGS:
+        counts, sizes = NUMERIC_ARGS[route]
+        if len(args) not in counts or not all(INT_ARG.fullmatch(x) for x in args) \
+                or any(int(x) <= 0 for x in args[:sizes]):
+            raise bad()
+        return args
     if route in ("omarchy toggle", "omarchy toggle enabled"):
         if not args or not TOGGLE_FLAG.fullmatch(args[0]) or len(args) > (2 if route == "omarchy toggle" else 1) \
                 or (len(args) == 2 and args[1] not in TOGGLE_ACTIONS):
@@ -696,7 +712,10 @@ def omarchy_args(c, args):
     for i, x in enumerate(args):
         # Names, ids and choices: a slash or "..", here, could only be an
         # attempt to reach a file outside where the command keeps its own.
-        if (("/" in x and not (route == "omarchy webapp install" and i)) or x in (".", "..")):
+        checked_url = route == "omarchy webapp install" and i
+        if (("/" in x and not checked_url) or x in (".", "..")):
+            raise bad()
+        if CODE_CHARS.search(x) and not checked_url:
             raise bad()
         if x[:1] in ("-", "+") and not STEP_ARG.fullmatch(x) and not (
                 x in SAFE_FLAGS and re.search(r"(?<![\w-])%s(?![\w=-])" % re.escape(x), spec)):

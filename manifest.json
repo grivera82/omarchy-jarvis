@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "grivera.jarvis",
   "name": "Jarvis",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "author": "grivera",
   "license": "MIT",
   "description": "Jarvis, your voice assistant: press the Copilot key and say what you want: open apps, close or move windows, switch workspaces, volume, music and more. Speech is recognized and spoken locally; anything beyond the built-in commands is planned by Claude or Codex.",
