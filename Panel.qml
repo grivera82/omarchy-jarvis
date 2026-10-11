@@ -26,17 +26,43 @@ Panel {
 
   readonly property string glyph: String.fromCodePoint(0xF05DD)
 
-  // Typed-only text field. Qt reads a clipboard offer in full before any
-  // validation runs, and the clipboard belongs to whatever app set it, so
-  // every paste path is closed: Ctrl+V / Shift+Insert, middle-click
-  // (primary selection) and the right-click menu.
+  // Qt's editable TextInput checks the clipboard when the offer changes, even
+  // without a paste gesture. Keep the native field read-only and apply only
+  // individual key events ourselves, so no clipboard offer is ever inspected.
   component TypedField: TextField {
+    readOnly: true
+    cursorVisible: activeFocus
     maximumLength: 500
     ContextMenu.menu: null
+
+    function replaceTyped(insert) {
+      const start = selectedText ? selectionStart : cursorPosition
+      const end = selectedText ? selectionEnd : cursorPosition
+      const next = text.slice(0, start) + insert + text.slice(end)
+      if (next.length > maximumLength) return
+      text = next
+      cursorPosition = start + insert.length
+    }
+
     Keys.onPressed: event => {
-      if (event.matches(StandardKey.Paste)
-          || (event.key === Qt.Key_Insert && (event.modifiers & Qt.ShiftModifier)))
+      if (event.key === Qt.Key_Backspace || event.key === Qt.Key_Delete) {
+        if (selectedText) replaceTyped("")
+        else if (event.key === Qt.Key_Backspace && cursorPosition > 0) {
+          select(cursorPosition - 1, cursorPosition)
+          replaceTyped("")
+        } else if (event.key === Qt.Key_Delete && cursorPosition < text.length) {
+          select(cursorPosition, cursorPosition + 1)
+          replaceTyped("")
+        }
         event.accepted = true
+      } else if (event.text && !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))
+                 && !/[\x00-\x1f\x7f]/.test(event.text)) {
+        replaceTyped(event.text)
+        event.accepted = true
+      } else if (event.matches(StandardKey.Paste)
+                 || (event.key === Qt.Key_Insert && (event.modifiers & Qt.ShiftModifier))) {
+        event.accepted = true
+      }
     }
     MouseArea {
       anchors.fill: parent
