@@ -1,5 +1,9 @@
 # Jarvis (grivera.jarvis)
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Omarchy plugin marketplace](https://img.shields.io/badge/Omarchy-plugin%20marketplace-2f6f4f.svg)](https://plugins.omarchy.org/plugin.html?id=grivera.jarvis)
+
+> Part of the [Omarchy plugin marketplace](https://plugins.omarchy.org/plugin.html?id=grivera.jarvis), listed as **Jarvis** (plugin ID `grivera.jarvis`). The marketplace registry lives at [omacom/omarchy-plugin-marketplace](https://github.com/omacom/omarchy-plugin-marketplace).
+
 **A voice assistant for Omarchy.** Press the Copilot key (or any shortcut you
 pick), say what you want, and Jarvis does it: open and arrange apps, switch workspaces, play music, change
 settings, answer questions, and even design you a new theme.
@@ -52,6 +56,20 @@ behind; to delete that too (about 1.5 GB, mostly models):
 ```
 rm -rf ~/.local/share/grivera-jarvis ~/.local/state/grivera-jarvis ~/.config/grivera-jarvis
 ```
+
+### Manual install
+
+To install without the plugin manager, clone the repository into Omarchy's
+plugin folder, check it with Omarchy's validator, then rescan and enable it:
+
+```
+git clone https://github.com/grivera82/omarchy-jarvis.git ~/.config/omarchy/plugins/grivera.jarvis
+omarchy plugin validate ~/.config/omarchy/plugins/grivera.jarvis
+omarchy-shell shell rescanPlugins
+omarchy plugin enable grivera.jarvis --section right
+```
+
+Then follow steps 1 to 3 above (speech models, shortcut, Claude Code or Codex).
 
 ## What it can do
 
@@ -327,4 +345,4 @@ The CLI is `~/.config/omarchy/plugins/grivera.jarvis/bin/jarvis`.
 
 ## License
 
-MIT
+[MIT](LICENSE)
